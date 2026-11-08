@@ -37,25 +37,44 @@ PERIOD_TUPLE_LIST = [
     ("2005-01-13", "9999-12-31", "2005-01-05", "2.30"),          # ... then a value -> revision
 ]
 
-# FUNCTION: BUILD A FAKE PAGE GETTER (PAGES OF page_size ROWS, IN THE API'S JSON SHAPE)
+# FUNCTION: BUILD A FAKE FRED API (vintagedates; observations clipped to the requested real-time window, as FRED does; pages of page_size)
 def get_fake_getter(period_tuple_list_in, page_size_int_in=3, call_list_in=None):
-    row_list = [{"realtime_start": start_str, "realtime_end": end_str, "date": date_str, "value": value_str}
-                for start_str, end_str, date_str, value_str in period_tuple_list_in]
-    def getter(series_str_in, offset_int_in):
-        call_list_in.append(offset_int_in) if call_list_in is not None else None
-        page_dict = {"realtime_start": "1776-07-04", "realtime_end": "9999-12-31", "output_type": 1, "count": len(row_list),
-                     "offset": offset_int_in, "limit": page_size_int_in, "observations": row_list[offset_int_in:offset_int_in + page_size_int_in]}
-        return json.dumps(page_dict).encode("utf-8")
+    def getter(endpoint_str_in, query_dict_in):
+        call_list_in.append((endpoint_str_in, query_dict_in.get("realtime_start"), query_dict_in["offset"])) if call_list_in is not None else None
+        offset_int = query_dict_in["offset"]
+        if endpoint_str_in == "series/vintagedates":
+            vintage_list = sorted({start_str for start_str, _, _, _ in period_tuple_list_in})
+            return json.dumps({"count": len(vintage_list), "vintage_dates": vintage_list[offset_int:offset_int + page_size_int_in]}).encode("utf-8")
+        window_start_str, window_end_str = query_dict_in["realtime_start"], query_dict_in["realtime_end"]
+        row_list = []
+        for start_str, end_str, date_str, value_str in period_tuple_list_in:
+            if start_str <= window_end_str and end_str >= window_start_str:
+                row_list.append({"realtime_start": max(start_str, window_start_str), "realtime_end": min(end_str, window_end_str), "date": date_str, "value": value_str})
+        row_list.sort(key=lambda row: (row["date"], row["realtime_start"]))
+        return json.dumps({"count": len(row_list), "offset": offset_int, "observations": row_list[offset_int:offset_int + page_size_int_in]}).encode("utf-8")
     return getter
 
-# TEST: PAGING AND PARSING
+# TEST: PAGING, WINDOWS AND PARSING
 def test_paging():
     call_list = []
     page_list = fred.fetch_fred_page_list("DTB3", get_fake_getter(PERIOD_TUPLE_LIST, 3, call_list))
-    assert call_list == [0, 3, 6], call_list
-    period_pdf = fred.get_period_pdf(page_list)
-    assert len(period_pdf) == len(PERIOD_TUPLE_LIST)
-    passed("paging and parsing")
+    # 7 VINTAGE DATES IN PAGES OF 3; ONE WINDOW (WINDOW SIZE 1000); 8 PERIODS IN PAGES OF 3
+    assert [call for call in call_list if call[0] == "series/vintagedates"] == [("series/vintagedates", "1776-07-04", 0), ("series/vintagedates", "1776-07-04", 3), ("series/vintagedates", "1776-07-04", 6)], call_list
+    assert len(fred.get_period_pdf(page_list)) == len(PERIOD_TUPLE_LIST)
+    # SMALL WINDOWS: SEVERAL OBSERVATION QUERIES, CLIPPED REPEATS, SAME PUBLISHED ROWS AS ONE WINDOW
+    one_pdf = fred.get_vintage_row_pdf(fred.get_period_pdf(page_list), "RUN1")
+    saved_int, fred.VINTAGE_WINDOW_INT = fred.VINTAGE_WINDOW_INT, 2
+    try:
+        call_list = []
+        window_list = fred.fetch_fred_page_list("DTB3", get_fake_getter(PERIOD_TUPLE_LIST, 3, call_list))
+    finally:
+        fred.VINTAGE_WINDOW_INT = saved_int
+    window_start_list = sorted({call[1] for call in call_list if call[0] == "series/observations"})
+    assert window_start_list == ["2005-01-03", "2005-01-05", "2005-01-07", "2005-01-13"], window_start_list
+    assert len(fred.get_period_pdf(window_list)) > len(PERIOD_TUPLE_LIST)
+    window_pdf = fred.get_vintage_row_pdf(fred.get_period_pdf(window_list), "RUN1")
+    assert window_pdf.equals(one_pdf), (window_pdf, one_pdf)
+    passed("paging, vintage-date windows (clipped repeats collapse to the same rows) and parsing")
 
 # TEST: VINTAGE ROWS (KINDS, CLOCKS, DEDUPLICATION)
 def test_vintage_rows():
@@ -112,7 +131,7 @@ def test_publish():
     summary_dict = fred.run_fred_series_dict("DTB3", True, "RUN1", get_fake_getter(PERIOD_TUPLE_LIST), "2026-01-01")
     published_pdf = pd.read_csv(file_path_str, dtype=str, keep_default_na=False)
     assert len(published_pdf) == 7 and list(published_pdf.columns) == fred.FRED_COLUMN_STR_LIST
-    assert len(glob.glob(f"{config.INGEST_RECORD_PATH_STR}downloads/fred_dtb3/RUN1/page_*.json")) == 3
+    assert len(glob.glob(f"{config.INGEST_RECORD_PATH_STR}downloads/fred_dtb3/RUN1/page_*.json")) == 6
     first_bytes = open(file_path_str, "rb").read()
     # A RERUN ADDS NOTHING AND LEAVES THE FILE BYTE-FOR-BYTE
     summary_dict = fred.run_fred_series_dict("DTB3", True, "RUN2", get_fake_getter(PERIOD_TUPLE_LIST), "2026-01-01")
@@ -143,7 +162,7 @@ def test_publish():
 # TEST: ERRORS NEVER CARRY THE KEY
 def test_key_never_shown():
     secret_str = "abcdefghij0123456789abcdefghij01"
-    def failing_getter(series_str_in, offset_int_in):
+    def failing_getter(endpoint_str_in, query_dict_in):
         return json.dumps({"error_code": 400, "error_message": f"Bad Request. api_key {secret_str} is not registered"}).encode("utf-8")
     try:
         fred.fetch_fred_page_list("DTB3", failing_getter)
@@ -156,12 +175,12 @@ def test_key_never_shown():
     http_error = urllib.error.HTTPError("https://x?api_key=" + secret_str, 400, "Bad Request", {}, io.BytesIO(json.dumps({"error_message": f"key {secret_str} bad"}).encode()))
     with mock.patch("urllib.request.urlopen", side_effect=http_error):
         try:
-            fred.get_fred_page_bytes("DTB3", 0, secret_str)
+            fred.get_fred_response_bytes("series/observations", {"series_id": "DTB3"}, secret_str)
         except fred.FredError as error:
             assert secret_str not in str(error) and "HTTP 400" in str(error), str(error)
     with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError(f"https://x?api_key={secret_str}")):
         try:
-            fred.get_fred_page_bytes("DTB3", 0, secret_str)
+            fred.get_fred_response_bytes("series/observations", {"series_id": "DTB3"}, secret_str)
         except fred.FredError as error:
             assert secret_str not in str(error), str(error)
     passed("API errors never carry the key")

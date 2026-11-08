@@ -15,8 +15,8 @@ from ingest.records import get_file_sha256_str
 """
 FRED / ALFRED Series With First-Release Vintages (DTB3 first; UNRATE later reuses this module)
 
-One request series per run: every real-time period of every observation (FRED API series/observations, output_type 1,
-realtime_start 1776-07-04, realtime_end 9999-12-31), paged. The pages are saved as downloaded, with their SHA-256, before parsing.
+One request series per run: every real-time period of every observation (FRED API series/vintagedates, then series/observations
+with output_type 1 in windows of at most 1000 vintage dates), paged. The pages are saved as downloaded, with their SHA-256, before parsing.
 
 Published rows (contract version 2, docs/DATA_CONTRACT.md):
     date, available_ts, observation_date, value_pct, vintage_realtime_start, vintage_kind, ingest_run_id
@@ -35,7 +35,9 @@ The API key comes from Windows Credential Manager (keyring) and never appears in
 """
 
 # DEFINE THE FRED API
-FRED_OBSERVATIONS_URL_STR = "https://api.stlouisfed.org/fred/series/observations"
+FRED_API_URL_STR = "https://api.stlouisfed.org/fred/"
+# DEFINE THE MOST VINTAGE DATES IN ONE OBSERVATION REQUEST (API LIMIT 2000 FOR JSON)
+VINTAGE_WINDOW_INT = 1000
 # DEFINE THE KEYRING ENTRY OF THE API KEY (scripts/machine/store_fred_key.py WRITES IT)
 KEYRING_SERVICE_STR = "stock_overflow_infra"
 KEYRING_USERNAME_STR = "fred_api_key"
@@ -74,22 +76,21 @@ def get_fred_api_key_str():
     # RETURN THE KEY
     return key_str.strip()
 
-# FUNCTION: GET ONE PAGE FROM THE FRED API
-def get_fred_page_bytes(series_str_in, offset_int_in, api_key_str_in, timeout_int_in=60):
+# FUNCTION: SEND ONE REQUEST TO THE FRED API
+def get_fred_response_bytes(endpoint_str_in, query_dict_in, api_key_str_in, timeout_int_in=60):
     """
     Args:
-        series_str_in (str): FRED series id
-        offset_int_in (int): Row offset
+        endpoint_str_in (str): "series/observations" or "series/vintagedates"
+        query_dict_in (dict): Query parameters without the key and file type
         api_key_str_in (str): API key
         timeout_int_in (int): Seconds
 
     Returns:
         bytes: The response body as downloaded (JSON)
     """
-    # BUILD THE REQUEST (EVERY REAL-TIME PERIOD OF EVERY OBSERVATION)
-    query_dict = {"series_id": series_str_in, "api_key": api_key_str_in, "file_type": "json", "output_type": 1,
-                  "realtime_start": "1776-07-04", "realtime_end": "9999-12-31", "sort_order": "asc", "limit": PAGE_LIMIT_INT, "offset": offset_int_in}
-    request = urllib.request.Request(f"{FRED_OBSERVATIONS_URL_STR}?{urllib.parse.urlencode(query_dict)}", headers={"User-Agent": "stock_overflow_infra"})
+    # BUILD THE REQUEST
+    query_dict = {**query_dict_in, "api_key": api_key_str_in, "file_type": "json"}
+    request = urllib.request.Request(f"{FRED_API_URL_STR}{endpoint_str_in}?{urllib.parse.urlencode(query_dict)}", headers={"User-Agent": "stock_overflow_infra"})
     # SEND IT; ERRORS ARE RE-RAISED WITHOUT THE URL (IT HOLDS THE KEY)
     try:
         with urllib.request.urlopen(request, timeout=timeout_int_in) as response:
@@ -103,34 +104,61 @@ def get_fred_page_bytes(series_str_in, offset_int_in, api_key_str_in, timeout_in
     except urllib.error.URLError as error:
         raise FredError(f"FRED could not be reached ({type(error.reason).__name__}).") from None
 
-# FUNCTION: FETCH EVERY PAGE OF A SERIES
-def fetch_fred_page_list(series_str_in, page_getter_in=None):
+# FUNCTION: GET EVERY PAGE OF ONE QUERY
+def get_paged_body_list(getter_in, endpoint_str_in, query_dict_in, list_key_str_in):
     """
     Args:
-        series_str_in (str): FRED series id
-        page_getter_in (callable | None): (series, offset) -> bytes; None = the real API with the stored key (tests pass a fake)
+        getter_in (callable): (endpoint, query dict) -> bytes
+        endpoint_str_in (str): API endpoint
+        query_dict_in (dict): Query parameters
+        list_key_str_in (str): Name of the list in the response ("observations" or "vintage_dates")
 
     Returns:
         list[bytes]: Response bodies in order
     """
-    # USE THE REAL API UNLESS A GETTER IS GIVEN
-    if page_getter_in is None:
-        api_key_str = get_fred_api_key_str()
-        page_getter_in = lambda series_str, offset_int: get_fred_page_bytes(series_str, offset_int, api_key_str)
     # PAGE THROUGH THE ROWS
-    page_bytes_list, offset_int = [], 0
+    body_list, offset_int = [], 0
     while True:
-        page_bytes = page_getter_in(series_str_in, offset_int)
-        page_dict = json.loads(page_bytes.decode("utf-8"))
-        if "observations" not in page_dict:
-            raise FredError(f"FRED page at offset {offset_int} has no observations ({page_dict.get('error_message', 'unknown format')}).")
-        page_bytes_list.append(page_bytes)
-        offset_int += len(page_dict["observations"])
+        body_bytes = getter_in(endpoint_str_in, {**query_dict_in, "limit": PAGE_LIMIT_INT if list_key_str_in == "observations" else 10000, "offset": offset_int})
+        body_dict = json.loads(body_bytes.decode("utf-8"))
+        if list_key_str_in not in body_dict:
+            raise FredError(f"FRED {endpoint_str_in} answer at offset {offset_int} has no {list_key_str_in} ({body_dict.get('error_message', 'unknown format')}).")
+        body_list.append(body_bytes)
+        offset_int += len(body_dict[list_key_str_in])
         # STOP WHEN EVERY ROW HAS BEEN READ (OR A PAGE IS EMPTY)
-        if not page_dict["observations"] or offset_int >= int(page_dict.get("count", 0)):
+        if not body_dict[list_key_str_in] or offset_int >= int(body_dict.get("count", 0)):
             break
-    # RETURN THE PAGES
-    return page_bytes_list
+    return body_list
+
+# FUNCTION: FETCH EVERY REAL-TIME PERIOD OF A SERIES, IN WINDOWS OF AT MOST VINTAGE_WINDOW_INT VINTAGE DATES
+def fetch_fred_page_list(series_str_in, getter_in=None):
+    """
+    Args:
+        series_str_in (str): FRED series id
+        getter_in (callable | None): (endpoint, query dict) -> bytes; None = the real API with the stored key (tests pass a fake)
+
+    Returns:
+        list[bytes]: Response bodies: the vintage-date pages first, then the observation pages of each window
+    """
+    # USE THE REAL API UNLESS A GETTER IS GIVEN
+    if getter_in is None:
+        api_key_str = get_fred_api_key_str()
+        getter_in = lambda endpoint_str, query_dict: get_fred_response_bytes(endpoint_str, query_dict, api_key_str)
+    # LIST EVERY VINTAGE DATE OF THE SERIES
+    vintage_body_list = get_paged_body_list(getter_in, "series/vintagedates", {"series_id": series_str_in, "realtime_start": "1776-07-04", "realtime_end": "9999-12-31"}, "vintage_dates")
+    vintage_str_list = sorted({date_str for body_bytes in vintage_body_list for date_str in json.loads(body_bytes.decode("utf-8"))["vintage_dates"]})
+    if not vintage_str_list:
+        raise FredError(f"FRED lists no vintage dates for {series_str_in}.")
+    # ONE OBSERVATION QUERY PER WINDOW (THE API REFUSES MORE THAN 2000 VINTAGE DATES IN ONE JSON REQUEST); PERIODS ARE CLIPPED TO
+    # THE WINDOW, SO A PERIOD CROSSING A WINDOW EDGE COMES BACK ONCE PER WINDOW WITH THE SAME VALUE (get_vintage_row_pdf DROPS THE REPEATS)
+    observation_body_list = []
+    for start_int in range(0, len(vintage_str_list), VINTAGE_WINDOW_INT):
+        window_str_list = vintage_str_list[start_int:start_int + VINTAGE_WINDOW_INT]
+        query_dict = {"series_id": series_str_in, "output_type": 1, "sort_order": "asc", "realtime_start": window_str_list[0],
+                      "realtime_end": "9999-12-31" if start_int + VINTAGE_WINDOW_INT >= len(vintage_str_list) else window_str_list[-1]}
+        observation_body_list += get_paged_body_list(getter_in, "series/observations", query_dict, "observations")
+    # RETURN THE BODIES (VINTAGE LIST FIRST)
+    return vintage_body_list + observation_body_list
 
 # FUNCTION: PARSE THE PAGES INTO REAL-TIME PERIODS
 def get_period_pdf(page_bytes_list_in):
@@ -142,7 +170,7 @@ def get_period_pdf(page_bytes_list_in):
         pd.DataFrame: observation_date, realtime_start, realtime_end, value (all text), one row per real-time period
     """
     # COLLECT THE OBSERVATIONS OF EVERY PAGE
-    row_list = [row for page_bytes in page_bytes_list_in for row in json.loads(page_bytes.decode("utf-8"))["observations"]]
+    row_list = [row for page_bytes in page_bytes_list_in for row in json.loads(page_bytes.decode("utf-8")).get("observations", [])]
     period_pdf = pd.DataFrame(row_list, columns=["realtime_start", "realtime_end", "date", "value"]).astype(str)
     # RENAME THE OBSERVATION DATE AND SORT
     period_pdf = period_pdf.rename(columns={"date": "observation_date"})
@@ -345,7 +373,7 @@ def run_fred_series_dict(series_str_in, apply_bool_in, run_id_str_in, page_gette
         series_str_in (str): Key of FRED_SERIES_SPEC_DICT
         apply_bool_in (bool): False = dry run (nothing written)
         run_id_str_in (str): Run id
-        page_getter_in (callable | None): Fake page getter for tests
+        page_getter_in (callable | None): Fake (endpoint, query) getter for tests
         today_str_in (str | None): Retrieval date (None = today in UTC)
 
     Returns:
