@@ -90,17 +90,21 @@ refresh never copies them into the development view.
 | `ingest_run_id` | Run that first published the row |
 
 - **Key:** `(observation_date, vintage_realtime_start)`. One row per observation is not `revision`; it is its first release.
-- **`first_seen`:** `available_ts` = `vintage_realtime_start` at 16:30 New York.
+- **`first_seen`:** `available_ts` = the **later** of `vintage_realtime_start` and the next US federal business day after
+  `observation_date`, at 16:30 New York. The floor (decided 2026-11-08) covers ALFRED records that put a posting on or before
+  the observation date (seen for two dates in 2015) or on a weekend or holiday; `vintage_realtime_start` keeps ALFRED's date.
 - **`rule_based_backfill`:** an observation older than the series' earliest ALFRED vintage has no record of its first posting.
   `available_ts` = the next US federal business day after `observation_date`, at 16:30 New York. This is an assumption, not a
   record.
 - **`revision`:** a later real-time period whose value differs from the one before; `available_ts` = its
-  `vintage_realtime_start` at 16:30 New York. Periods that repeat the same value are not rows.
+  `vintage_realtime_start` at 16:30 New York, with the same floor. Periods that repeat the same value are not rows.
+- **Holiday calendar:** pandas' `USFederalHolidayCalendar` applies today's holiday rules to every year, so before 1971 a
+  backfilled clock can be off by about a day. It does not affect any date from 2005 on.
 - **Not done here (research, R4b):** the conversion from discount basis to an investment yield, the accrual over calendar days,
   and carrying the last value over sessions with no value.
 - **Checks before a publish** (any failure stops it): one row per key; one first release per observation; no observation or
   vintage after the retrieval date; `available_ts` after the observation date; values parse and lie in [−1, 20].
-  **Reported:** observations on a weekend or federal holiday, weekdays with no observation (holiday or not), first releases
+  **Reported:** rows moved later by the floor, observations on a weekend or federal holiday, weekdays with no observation (holiday or not), first releases
   of `.`, and observations whose first release differs from the latest.
 
 ## Sources to come (version 2)

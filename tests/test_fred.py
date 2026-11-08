@@ -35,6 +35,8 @@ PERIOD_TUPLE_LIST = [
     ("2005-01-07", "9999-12-31", "2005-01-04", "2.27"),          # same value, new period -> not a row
     ("2005-01-06", "2005-01-12", "2005-01-05", "."),             # no value first ...
     ("2005-01-13", "9999-12-31", "2005-01-05", "2.30"),          # ... then a value -> revision
+    ("2005-01-06", "9999-12-31", "2005-01-06", "2.31"),          # ALFRED records the posting ON the observation date -> moved to 2005-01-07
+    ("2005-01-08", "9999-12-31", "2005-01-07", "2.32"),          # posted on a Saturday -> moved to Monday 2005-01-10
 ]
 
 # FUNCTION: BUILD A FAKE FRED API (vintagedates; observations clipped to the requested real-time window, as FRED does; pages of page_size)
@@ -58,7 +60,7 @@ def get_fake_getter(period_tuple_list_in, page_size_int_in=3, call_list_in=None)
 def test_paging():
     call_list = []
     page_list = fred.fetch_fred_page_list("DTB3", get_fake_getter(PERIOD_TUPLE_LIST, 3, call_list))
-    # 7 VINTAGE DATES IN PAGES OF 3; ONE WINDOW (WINDOW SIZE 1000); 8 PERIODS IN PAGES OF 3
+    # 8 VINTAGE DATES IN PAGES OF 3; ONE WINDOW (WINDOW SIZE 1000); 10 PERIODS IN PAGES OF 3
     assert [call for call in call_list if call[0] == "series/vintagedates"] == [("series/vintagedates", "1776-07-04", 0), ("series/vintagedates", "1776-07-04", 3), ("series/vintagedates", "1776-07-04", 6)], call_list
     assert len(fred.get_period_pdf(page_list)) == len(PERIOD_TUPLE_LIST)
     # SMALL WINDOWS: SEVERAL OBSERVATION QUERIES, CLIPPED REPEATS, SAME PUBLISHED ROWS AS ONE WINDOW
@@ -70,7 +72,7 @@ def test_paging():
     finally:
         fred.VINTAGE_WINDOW_INT = saved_int
     window_start_list = sorted({call[1] for call in call_list if call[0] == "series/observations"})
-    assert window_start_list == ["2005-01-03", "2005-01-05", "2005-01-07", "2005-01-13"], window_start_list
+    assert window_start_list == ["2005-01-03", "2005-01-05", "2005-01-07", "2005-01-11"], window_start_list
     assert len(fred.get_period_pdf(window_list)) > len(PERIOD_TUPLE_LIST)
     window_pdf = fred.get_vintage_row_pdf(fred.get_period_pdf(window_list), "RUN1")
     assert window_pdf.equals(one_pdf), (window_pdf, one_pdf)
@@ -84,18 +86,23 @@ def test_vintage_rows():
     assert kind_dict == {("2004-12-30", "2005-01-03"): "rule_based_backfill", ("2004-12-31", "2005-01-03"): "rule_based_backfill",
                          ("2005-01-03", "2005-01-04"): "first_seen", ("2005-01-03", "2005-01-11"): "revision",
                          ("2005-01-04", "2005-01-05"): "first_seen", ("2005-01-05", "2005-01-06"): "first_seen",
-                         ("2005-01-05", "2005-01-13"): "revision"}, kind_dict
+                         ("2005-01-05", "2005-01-13"): "revision", ("2005-01-06", "2005-01-06"): "first_seen",
+                         ("2005-01-07", "2005-01-08"): "first_seen"}, kind_dict
     date_dict = {(row.observation_date, row.vintage_realtime_start): (row.date, row.available_ts) for row in row_pdf.itertuples()}
     # BACKFILL: THE NEXT FEDERAL BUSINESS DAY AT 16:30 NEW YORK (FRIDAY 2004-12-31 IS THE OBSERVED NEW YEAR HOLIDAY)
     assert date_dict[("2004-12-30", "2005-01-03")] == ("2005-01-03", "2005-01-03 16:30:00-05:00")
     assert date_dict[("2004-12-31", "2005-01-03")] == ("2005-01-03", "2005-01-03 16:30:00-05:00")
     assert date_dict[("2005-01-03", "2005-01-11")] == ("2005-01-11", "2005-01-11 16:30:00-05:00")
+    # NEVER EARLIER THAN THE NEXT FEDERAL BUSINESS DAY AFTER THE OBSERVATION; THE ALFRED DATE IS KEPT IN vintage_realtime_start
+    assert date_dict[("2005-01-06", "2005-01-06")] == ("2005-01-07", "2005-01-07 16:30:00-05:00")
+    assert date_dict[("2005-01-07", "2005-01-08")] == ("2005-01-10", "2005-01-10 16:30:00-05:00")
+    assert date_dict[("2005-01-03", "2005-01-04")] == ("2005-01-04", "2005-01-04 16:30:00-05:00")
     # SUMMER TIME OFFSET
     assert fred.get_available_ts_series(pd.Series(["2005-07-05"])).iloc[0] == "2005-07-05 16:30:00-04:00"
     # A FEDERAL HOLIDAY IS SKIPPED BY THE RULE (2005-01-17 MARTIN LUTHER KING DAY)
     assert fred.get_next_federal_business_day_series(pd.Series(["2005-01-14", "2005-01-17", "2005-01-15"])).tolist() == ["2005-01-18"] * 3
     # VALUES STAY AS SENT
-    assert set(row_pdf["value_pct"]) == {"2.20", "2.21", "2.25", "2.26", "2.27", ".", "2.30"}
+    assert set(row_pdf["value_pct"]) == {"2.20", "2.21", "2.25", "2.26", "2.27", ".", "2.30", "2.31", "2.32"}
     passed("vintage rows: kinds, 16:30 clocks, backfill rule, unchanged periods dropped, '.' kept")
 
 # TEST: CHECKS
@@ -105,6 +112,7 @@ def test_checks():
     issue_dict = fred.get_fred_issue_dict(row_pdf, spec_dict, "2026-01-01")
     assert not any(date_list for name_str, date_list in issue_dict.items() if name_str.startswith("blocking")), issue_dict
     assert issue_dict["reported_dot_value_first_row"] == ["2005-01-05"]
+    assert sorted(issue_dict["reported_available_moved_to_next_business_day"]) == ["2005-01-06", "2005-01-07"]
     assert sorted(issue_dict["reported_first_differs_from_latest"]) == ["2005-01-03", "2005-01-05"]
     # FUTURE, OUT OF RANGE AND UNPARSABLE VALUES BLOCK
     bad_list = PERIOD_TUPLE_LIST + [("2005-01-03", "9999-12-31", "2027-01-04", "2.0"), ("2005-01-10", "9999-12-31", "2005-01-07", "25.0"),
@@ -125,13 +133,13 @@ def test_publish():
     file_path_str = f"{config.RAWZONE_PATH_STR}fred_dtb3/dtb3.csv"
     # DRY RUN WRITES NOTHING
     summary_dict = fred.run_fred_series_dict("DTB3", False, "RUN1", get_fake_getter(PERIOD_TUPLE_LIST), "2026-01-01")
-    assert summary_dict["row_to_add_count_int"] == 7 and not os.path.exists(file_path_str)
+    assert summary_dict["row_to_add_count_int"] == 9 and not os.path.exists(file_path_str)
     assert not os.path.exists(f"{config.INGEST_RECORD_PATH_STR}downloads")
     # APPLY WRITES THE FILE AND THE PAGES
     summary_dict = fred.run_fred_series_dict("DTB3", True, "RUN1", get_fake_getter(PERIOD_TUPLE_LIST), "2026-01-01")
     published_pdf = pd.read_csv(file_path_str, dtype=str, keep_default_na=False)
-    assert len(published_pdf) == 7 and list(published_pdf.columns) == fred.FRED_COLUMN_STR_LIST
-    assert len(glob.glob(f"{config.INGEST_RECORD_PATH_STR}downloads/fred_dtb3/RUN1/page_*.json")) == 6
+    assert len(published_pdf) == 9 and list(published_pdf.columns) == fred.FRED_COLUMN_STR_LIST
+    assert len(glob.glob(f"{config.INGEST_RECORD_PATH_STR}downloads/fred_dtb3/RUN1/page_*.json")) == 7
     first_bytes = open(file_path_str, "rb").read()
     # A RERUN ADDS NOTHING AND LEAVES THE FILE BYTE-FOR-BYTE
     summary_dict = fred.run_fred_series_dict("DTB3", True, "RUN2", get_fake_getter(PERIOD_TUPLE_LIST), "2026-01-01")
@@ -140,8 +148,8 @@ def test_publish():
     new_list = PERIOD_TUPLE_LIST + [("2005-02-01", "9999-12-31", "2005-01-04", "2.28")]
     summary_dict = fred.run_fred_series_dict("DTB3", True, "RUN3", get_fake_getter(new_list), "2026-01-01")
     published_pdf = pd.read_csv(file_path_str, dtype=str, keep_default_na=False)
-    assert summary_dict["row_to_add_count_int"] == 1 and len(published_pdf) == 8
-    assert published_pdf["ingest_run_id"].value_counts().to_dict() == {"RUN1": 7, "RUN3": 1}
+    assert summary_dict["row_to_add_count_int"] == 1 and len(published_pdf) == 10
+    assert published_pdf["ingest_run_id"].value_counts().to_dict() == {"RUN1": 9, "RUN3": 1}
     assert glob.glob(f"{config.RAWZONE_PATH_STR}fred_dtb3_backup_*/dtb3.csv")
     # A SOURCE THAT CHANGES A PUBLISHED VINTAGE STOPS THE RUN; THE FILE IS UNTOUCHED
     before_bytes = open(file_path_str, "rb").read()

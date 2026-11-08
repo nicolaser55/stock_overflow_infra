@@ -20,10 +20,11 @@ with output_type 1 in windows of at most 1000 vintage dates), paged. The pages a
 
 Published rows (contract version 2, docs/DATA_CONTRACT.md):
     date, available_ts, observation_date, value_pct, vintage_realtime_start, vintage_kind, ingest_run_id
-    - first_seen:           the first real-time period of an observation; available_ts = its realtime_start at 16:30 New York.
+    - first_seen:           the first real-time period of an observation; available_ts = the later of its realtime_start and the next
+                            US federal business day after the observation, at 16:30 New York.
     - rule_based_backfill:  the first period of an observation older than the series' earliest vintage (ALFRED has no record of its
                             first posting); available_ts = the next US federal business day after the observation at 16:30 New York.
-    - revision:             a later period whose value differs from the previous one; available_ts = its realtime_start at 16:30.
+    - revision:             a later period whose value differs from the previous one; available_ts = the same "later of" rule.
     - date = the New York date of available_ts (the development-view refresh cuts on it).
     - value_pct is the text FRED sent ("." = no value); never converted here.
 
@@ -230,10 +231,11 @@ def get_vintage_row_pdf(period_pdf_in, run_id_str_in):
     keep_pdf["vintage_kind"] = "revision"
     keep_pdf.loc[keep_first_bool_series, "vintage_kind"] = "first_seen"
     keep_pdf.loc[backfill_bool_series, "vintage_kind"] = "rule_based_backfill"
-    # AVAILABILITY DATE: THE REALTIME START, OR THE NEXT FEDERAL BUSINESS DAY FOR BACKFILLED ROWS
-    available_date_series = keep_pdf["realtime_start"].copy()
-    if backfill_bool_series.any():
-        available_date_series[backfill_bool_series] = get_next_federal_business_day_series(keep_pdf.loc[backfill_bool_series, "observation_date"]).values
+    # AVAILABILITY DATE: THE LATER OF THE REALTIME START AND THE NEXT FEDERAL BUSINESS DAY AFTER THE OBSERVATION (NEVER EARLIER THAN
+    # THE RULE, EVEN WHEN ALFRED RECORDS A POSTING ON OR BEFORE THE OBSERVATION DATE OR ON A WEEKEND / HOLIDAY); BACKFILLED ROWS: THE RULE
+    rule_date_series = get_next_federal_business_day_series(keep_pdf["observation_date"])
+    available_date_series = keep_pdf["realtime_start"].where(keep_pdf["realtime_start"] >= rule_date_series, rule_date_series)
+    available_date_series[backfill_bool_series] = rule_date_series[backfill_bool_series]
     # BUILD THE PUBLISHED COLUMNS
     row_pdf = pd.DataFrame({"date": available_date_series, "available_ts": get_available_ts_series(available_date_series),
                             "observation_date": keep_pdf["observation_date"], "value_pct": keep_pdf["value"],
@@ -275,6 +277,9 @@ def get_fred_issue_dict(row_pdf_in, spec_dict_in, today_str_in):
         missing_str_set = weekday_str_set - set(first_pdf["observation_date"])
         issue_dict["reported_weekday_missing_not_holiday"] = sorted(missing_str_set - holiday_set)
         issue_dict["reported_weekday_missing_holiday"] = sorted(missing_str_set & holiday_set)
+    # REPORTED: ROWS WHOSE AVAILABILITY WAS MOVED LATER THAN THE ALFRED REALTIME START BY THE NEXT-BUSINESS-DAY FLOOR
+    moved_bool_series = (row_pdf_in["vintage_kind"] != "rule_based_backfill") & (row_pdf_in["date"] != row_pdf_in["vintage_realtime_start"])
+    issue_dict["reported_available_moved_to_next_business_day"] = row_pdf_in.loc[moved_bool_series, "observation_date"].tolist()
     issue_dict["reported_dot_value_first_row"] = first_pdf.loc[first_pdf["value_pct"] == ".", "observation_date"].tolist()
     # COUNT THE OBSERVATIONS WHOSE FIRST VALUE DIFFERS FROM THE LATEST
     latest_value_series = row_pdf_in.groupby("observation_date")["value_pct"].last()
