@@ -3,7 +3,7 @@
 Machine-side code of the Stock Overflow project:
 - **`ingest/`** downloads market data from IBKR (SPY 1-minute bars; VIX and VIX3M daily and 1-minute bars), checks it and adds
   it to the project's complete data tree, the quarantine. It also brings in the 3-month T-bill rate (FRED DTB3) with every
-  first release and revision, and (next) SPY dividends.
+  first release and revision, and SPY dividends (State Street, cross-checked against Nasdaq).
 - **`backup/`** (to come) will hold the NAS backup and archive jobs.
 
 The research itself lives in [`stock_overflow_workspace`](https://github.com/nicolaser55/stock_overflow_workspace). That
@@ -58,6 +58,9 @@ has the full sequence, with the steps that follow in the research workspace.
 
 **3-month T-bill rate (FRED DTB3):** store the API key once with `scripts\machine\store_fred_key.py`, then
 `scripts\ingest\download_fred_series.py` (dry run) and `--apply`. No IB Gateway needed.
+
+**SPY dividends:** `scripts\ingest\import_spy_dividends.py --ssga-file <State Street XLSX>` (dry run) and `--apply`
+([`docs/RUNBOOK.md`](docs/RUNBOOK.md)).
 
 Only one IBKR session per username can be signed in at a time. Signing in on one machine signs the other out.
 

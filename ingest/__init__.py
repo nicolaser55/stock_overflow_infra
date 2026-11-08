@@ -13,6 +13,7 @@ Stock Overflow Ingest (package of stock_overflow_infra)
     ingest.index_merge      VIX / VIX3M merge staging into raw
     ingest.index_status     VIX / VIX3M folder status
     ingest.fred             FRED / ALFRED series with first-release and revision rows (DTB3): fetch, check, append-only publish
+    ingest.dividends        SPY dividends: State Street workbook, Nasdaq cross-check, resolutions, checks, append-only publish
 
 This package does not import the research workspace (package so). The interface between the two is the file layout described
 in docs/DATA_CONTRACT.md.

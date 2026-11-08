@@ -1,7 +1,7 @@
 # Data contract: what this repository writes for `stock_overflow_workspace`
 
-**Contract version 2, draft (2026-11-08): version 1 plus the 3-month T-bill rate (DTB3). SPY dividends are added before
-version 2 is final; no research loader reads version 2 yet.** The research workspace reads files only and never imports this repository. This document
+**Contract version 2 (2026-11-08): version 1 plus the 3-month T-bill rate (DTB3) and SPY dividends. No research loader reads
+version 2 yet (delivery D3).** The research workspace reads files only and never imports this repository. This document
 is the whole interface between the two. A change to any folder name, file name, column or meaning below raises the version.
 That change lands in this file, in `tests/contract_reader.py`, and in the research side (`so/paths.py`, the loaders,
 `docs/DATA_SOURCES.md`) at the same time. The research files are protected, so Nicolas approves each change.
@@ -26,8 +26,10 @@ Every script refuses a target root that:
 ├── ibkr_vix_family_staging/             the same for VIX / VIX3M
 ├── <raw folder>_backup_YYYYMMDD_HHMMSS/ copies made before any raw file is changed
 ├── fred_dtb3/dtb3.csv                    3-month T-bill rate, every first release and revision (version 2)
+├── spy_dividends/spy_dividends.csv      SPY distributions from 2005, first release and revisions (version 2)
 └── _ingest/                             ingest records: runs/<run id>.json (manifests), locks/<name>.lock,
-                                         downloads/<source>/<run id>/ (responses as downloaded)
+                                         downloads/<source>/<run id>/ (responses as downloaded),
+                                         resolutions/ (Nicolas's decisions on source disagreements)
 ```
 
 The research reads only the raw folders. The staging, backup and `_ingest` folders are not named in `so.paths`, so the
@@ -107,6 +109,35 @@ refresh never copies them into the development view.
   **Reported:** rows moved later by the floor, observations on a weekend or federal holiday, weekdays with no observation (holiday or not), first releases
   of `.`, and observations whose first release differs from the latest.
 
-## Sources to come (version 2)
+## `spy_dividends/spy_dividends.csv`: SPY distributions (State Street, cross-checked against Nasdaq)
 
-- `spy_dividends/spy_dividends.csv` (SPY dividends).
+| Column | Meaning |
+|---|---|
+| `date` | New York date of `available_ts` |
+| `available_ts` | When the row was public (below) |
+| `ex_date` | Ex-dividend date (`YYYY-MM-DD`, an NYSE session) |
+| `record_date`, `pay_date` | Record and payable dates, as State Street gives them |
+| `declared_date` | Nasdaq's declaration date when it gives one, else empty |
+| `amount_usd` | Dollars per share, **text as State Street gives it** (6 decimals), or the accepted value of a resolution |
+| `distribution_type` | `regular` (the only type so far; any other needs a decision first) |
+| `currency` | `USD` |
+| `vintage_kind` | `first_seen` or `revision` |
+| `ingest_run_id` | Run that first published the row |
+
+- **Source:** State Street's "SPDR Historical Distributions" workbook (ssga.com, SPDR Dividend Distributions page), downloaded
+  by hand and kept as received under `_ingest/downloads/spy_dividends/<run id>/`. Ex-dates from 2005-01-01 up to the run date.
+- **`first_seen`:** `available_ts` = the ex-date at **09:30 New York** (the approved clock); `date` = `ex_date`. This assumes
+  the amount was public by the open of the ex-date. State Street announces before the ex-date, but that cannot be proven for
+  every past row; Nasdaq declaration dates on or after the ex-date are reported.
+- **`revision`:** if State Street later shows another record date, pay date or amount for a published ex-date, a new row is
+  added with `available_ts` = the retrieval time (New York). The earlier row stays. A consumer takes, for each
+  `(ex_date, distribution_type)`, the latest row with `available_ts` at or before its decision time.
+- **Cross-check (blocking):** every ex-date that Nasdaq also lists must agree on the record date, the pay date and the amount
+  to 4 decimals. A disagreement stops the run until Nicolas settles it from the annual report, in
+  `_ingest/resolutions/spy_dividends_resolutions.csv` (columns `ex_date, field, accepted_value, note`; quarantine only).
+- **Other blocking checks:** the ex-date is an NYSE session; one row per ex-date; the pay date is after the ex-date; the record
+  date is not before the previous session; the amount is positive and below 3% of SPY's previous close (raw 1-minute bars);
+  exactly 4 distributions in each closed year from 2005, at most 4 in the current year.
+- **Reported:** ex-dates Nasdaq does not list, missing declaration dates, sessions with no raw close.
+- **Accounting (research, R4b):** credited on the ex-date to the shares held at the previous close.
+

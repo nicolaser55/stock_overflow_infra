@@ -78,3 +78,17 @@ Then, by hand, whenever the rate should be brought up to date:
 ```
 
 A run that stops (exit 1) wrote nothing. The summary is counts only.
+
+## SPY dividends (State Street, cross-checked against Nasdaq)
+
+1. Download "SPDR Historical Distributions" (XLSX) from ssga.com → Resources → SPDR Dividend Distributions.
+2. Dry run, then apply (the script fetches Nasdaq; if Nasdaq refuses, open
+   `https://api.nasdaq.com/api/quote/SPY/dividends?assetclass=etf` in a browser, save the page as JSON and add `--nasdaq-file <path>`):
+
+```powershell
+.\venv-infra\Scripts\python.exe scripts\ingest\import_spy_dividends.py --ssga-file <xlsx>             # dry run
+.\venv-infra\Scripts\python.exe scripts\ingest\import_spy_dividends.py --ssga-file <xlsx> --apply     # publish
+```
+
+A disagreement with Nasdaq stops the run. Settle it from the fund's annual report and add a line to
+`store01_rawzone\_ingest\resolutions\spy_dividends_resolutions.csv` (`ex_date,field,accepted_value,note`), then run again.
