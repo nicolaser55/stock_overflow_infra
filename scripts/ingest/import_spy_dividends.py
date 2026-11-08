@@ -6,11 +6,11 @@ from ingest.records import ScriptRun
 from ingest import dividends
 
 """
-Import SPY dividends from State Street's historical-distributions workbook, cross-checked against Nasdaq (APPEND-ONLY)
+Import SPY dividends from State Street's historical-distributions workbook, cross-checked against Yahoo Finance (APPEND-ONLY)
 
     python scripts/ingest/import_spy_dividends.py --ssga-file <xlsx>                              # DRY RUN: read, cross-check, check; write nothing
     python scripts/ingest/import_spy_dividends.py --ssga-file <xlsx> --apply                      # also keep the inputs and add the new rows
-    python scripts/ingest/import_spy_dividends.py --ssga-file <xlsx> --nasdaq-file <json> ...     # Nasdaq page saved from a browser
+    python scripts/ingest/import_spy_dividends.py --ssga-file <xlsx> --yahoo-file <csv> ...     # a saved cross-check CSV
 
 The workbook is "SPDR Historical Distributions" (XLSX) on ssga.com's SPDR Dividend Distributions page. Output is counts only;
 a date is shown only if it is before print_dates_before (config/local.toml); amounts are never shown.
@@ -19,9 +19,9 @@ a date is shown only if it is before print_dates_before (config/local.toml); amo
 # FUNCTION: MAIN
 def main():
     # PARSE THE ARGUMENTS
-    parser = argparse.ArgumentParser(description="Import SPY dividends (State Street, cross-checked against Nasdaq); dry run by default.")
+    parser = argparse.ArgumentParser(description="Import SPY dividends (State Street, cross-checked against Yahoo Finance); dry run by default.")
     parser.add_argument("--ssga-file", required=True, help="State Street 'SPDR Historical Distributions' XLSX as downloaded")
-    parser.add_argument("--nasdaq-file", default=None, help="Nasdaq SPY dividend JSON saved from a browser (default: fetch it)")
+    parser.add_argument("--yahoo-file", default=None, help="CSV ex_date,amount_usd to use instead of fetching Yahoo Finance (e.g. an archived run's yahoo_spy_dividends.csv)")
     parser.add_argument("--apply", action="store_true", help="really write (default: dry run)")
     parser.add_argument("--skip-close-check", action="store_true", help="skip the amount / previous close sanity check (no raw SPY bars)")
     parser.add_argument("--skip-root-check", action="store_true", help="bypass the target root check (tests on temporary folders only)")
@@ -32,7 +32,7 @@ def main():
     # RUN UNDER THE LOCK AND MANIFEST
     with ScriptRun("import_spy_dividends", vars(args), dividends.DIVIDEND_LOCK_STR, record_bool_in=args.apply, break_lock_bool_in=args.break_lock) as run:
         try:
-            summary_dict = dividends.run_dividend_dict(args.ssga_file, args.apply, run.run_id_str, nasdaq_file_path_str_in=args.nasdaq_file,
+            summary_dict = dividends.run_dividend_dict(args.ssga_file, args.apply, run.run_id_str, crosscheck_file_path_str_in=args.yahoo_file,
                                                        check_close_bool_in=not args.skip_close_check)
         except dividends.DividendError as error:
             print(f"❌ SPY dividends: {error}")

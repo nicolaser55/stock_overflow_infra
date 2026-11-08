@@ -109,7 +109,7 @@ refresh never copies them into the development view.
   **Reported:** rows moved later by the floor, observations on a weekend or federal holiday, weekdays with no observation (holiday or not), first releases
   of `.`, and observations whose first release differs from the latest.
 
-## `spy_dividends/spy_dividends.csv`: SPY distributions (State Street, cross-checked against Nasdaq)
+## `spy_dividends/spy_dividends.csv`: SPY distributions (State Street, cross-checked against Yahoo Finance)
 
 | Column | Meaning |
 |---|---|
@@ -117,7 +117,7 @@ refresh never copies them into the development view.
 | `available_ts` | When the row was public (below) |
 | `ex_date` | Ex-dividend date (`YYYY-MM-DD`, an NYSE session) |
 | `record_date`, `pay_date` | Record and payable dates, as State Street gives them |
-| `declared_date` | Nasdaq's declaration date when it gives one, else empty |
+| `declared_date` | Declaration date; empty (no source gives it yet) |
 | `amount_usd` | Dollars per share, **text as State Street gives it** (6 decimals), or the accepted value of a resolution |
 | `distribution_type` | `regular` (the only type so far; any other needs a decision first) |
 | `currency` | `USD` |
@@ -128,16 +128,19 @@ refresh never copies them into the development view.
   by hand and kept as received under `_ingest/downloads/spy_dividends/<run id>/`. Ex-dates from 2005-01-01 up to the run date.
 - **`first_seen`:** `available_ts` = the ex-date at **09:30 New York** (the approved clock); `date` = `ex_date`. This assumes
   the amount was public by the open of the ex-date. State Street announces before the ex-date, but that cannot be proven for
-  every past row; Nasdaq declaration dates on or after the ex-date are reported.
+  every past row.
 - **`revision`:** if State Street later shows another record date, pay date or amount for a published ex-date, a new row is
   added with `available_ts` = the retrieval time (New York). The earlier row stays. A consumer takes, for each
   `(ex_date, distribution_type)`, the latest row with `available_ts` at or before its decision time.
-- **Cross-check (blocking):** every ex-date that Nasdaq also lists must agree on the record date, the pay date and the amount
-  to 4 decimals. A disagreement stops the run until Nicolas settles it from the annual report, in
-  `_ingest/resolutions/spy_dividends_resolutions.csv` (columns `ex_date, field, accepted_value, note`; quarantine only).
+- **Cross-check (blocking), decided 2026-11-08:** Yahoo Finance (through `yfinance`), archived as
+  `yahoo_spy_dividends.csv` with each run. Every ex-date must be listed by Yahoo with the same amount to 4 decimals. Nasdaq, the
+  first choice, gives no history for symbols not listed on Nasdaq (SPY is on NYSE Arca). Yahoo has no record or pay dates; those
+  get the internal checks only. A disagreement or a missing ex-date stops the run until Nicolas settles it from the annual report,
+  in `_ingest/resolutions/spy_dividends_resolutions.csv` (columns `ex_date, field, accepted_value, note`; `field` is
+  `record_date`, `pay_date`, `amount_usd`, or `not_in_crosscheck` with `accept`; quarantine only).
 - **Other blocking checks:** the ex-date is an NYSE session; one row per ex-date; the pay date is after the ex-date; the record
   date is not before the previous session; the amount is positive and below 3% of SPY's previous close (raw 1-minute bars);
   exactly 4 distributions in each closed year from 2005, at most 4 in the current year.
-- **Reported:** ex-dates Nasdaq does not list, missing declaration dates, sessions with no raw close.
+- **Reported:** Yahoo ex-dates from 2005 that State Street does not list; sessions with no raw close.
 - **Accounting (research, R4b):** credited on the ex-date to the shares held at the previous close.
 

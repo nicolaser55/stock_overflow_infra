@@ -1,8 +1,7 @@
 import os
 import json
 import shutil
-import urllib.request
-import urllib.error
+import io
 from datetime import datetime, timezone
 import pandas as pd
 # IMPORT THE CONFIGURATION, THE RUN RECORDS, THE NYSE CALENDAR AND THE RAW FILE LISTING
@@ -12,13 +11,15 @@ from ingest.sessions import get_session_pdf, get_ny_now_ts
 from ingest.raw_files import get_ohlcv_file_pdf
 
 """
-SPY Dividends (State Street primary, Nasdaq cross-check), published append-only with their availability time
+SPY Dividends (State Street primary, Yahoo Finance cross-check), published append-only with their availability time
 
 Inputs:
     - State Street's "SPDR Historical Distributions" workbook (ssga.com, SPDR Dividend Distributions page, XLSX), downloaded by hand;
       one sheet, header FUND NAME, TICKER, CUSIP, EX-DATE, RECORD DATE, PAYABLE DATE, DIVIDEND ($), ..., every cell text (MM/DD/YYYY,
       amounts with 6 decimals). Only SPY rows with an ex-date from 2005-01-01 up to today (New York) are used.
-    - Nasdaq's dividend history of SPY (api.nasdaq.com JSON), fetched by the script or saved by hand from a browser (--nasdaq-file).
+    - Yahoo Finance's dividend history of SPY (ex-date and amount), fetched with yfinance and kept as a CSV (ex_date, amount_usd);
+      or such a CSV given by hand (--yahoo-file). Nasdaq was the approved cross-check but gives no history for non-Nasdaq symbols
+      (SPY is listed on NYSE Arca); Nicolas chose Yahoo on 2026-11-08. Yahoo has no record or pay dates: those get internal checks only.
     - Optional resolutions (store01_rawzone/_ingest/resolutions/spy_dividends_resolutions.csv, in the quarantine, never in this
       repository): ex_date, field, accepted_value, note. A resolution settles a cross-source disagreement (from the annual report).
 
@@ -26,8 +27,7 @@ Published rows (store01_rawzone/spy_dividends/spy_dividends.csv, contract versio
     date, available_ts, ex_date, record_date, pay_date, declared_date, amount_usd, distribution_type, currency, vintage_kind, ingest_run_id
     - first_seen: available_ts = the ex-date at 09:30 New York (the approved clock); date = ex_date.
     - revision:   State Street later shows other values for a published ex-date; available_ts = the retrieval time (New York).
-    - amount_usd is State Street's text (or the accepted value of a resolution); declared_date is Nasdaq's declaration date when it
-      gives one (else empty).
+    - amount_usd is State Street's text (or the accepted value of a resolution); declared_date is empty (no source gives it yet).
 
 Output is counts only; a date is shown only if it is before config.PRINT_DATES_BEFORE_STR; no amount is ever printed.
 """
@@ -46,13 +46,14 @@ FIRST_EX_DATE_STR = "2005-01-01"
 SSGA_HEADER_DICT = {"ticker": "TICKER", "ex_date": "EX-DATE", "record_date": "RECORD DATE", "pay_date": "PAYABLE DATE", "amount": "DIVIDEND ($)",
                     "frequency": "FREQUENCY"}
 TICKER_STR = "SPY"
-# DEFINE THE NASDAQ REQUEST (A BROWSER-LIKE CLIENT IS REQUIRED BY THE SITE)
-NASDAQ_URL_STR = "https://api.nasdaq.com/api/quote/SPY/dividends?assetclass=etf"
-NASDAQ_HEADER_DICT = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json, text/plain, */*", "Origin": "https://www.nasdaq.com",
-                      "Referer": "https://www.nasdaq.com/"}
+# DEFINE THE CROSS-CHECK FILE COLUMNS (YAHOO FINANCE THROUGH yfinance)
+CROSSCHECK_COLUMN_STR_LIST = ["ex_date", "amount_usd"]
 # DEFINE THE RESOLUTIONS FILE (IN THE QUARANTINE) AND ITS COLUMNS
 RESOLUTION_FILE_NAME_STR = "spy_dividends_resolutions.csv"
 RESOLUTION_COLUMN_STR_LIST = ["ex_date", "field", "accepted_value", "note"]
+# DEFINE THE RESOLUTION FIELDS: A VALUE FIELD (accepted_value REPLACES STATE STREET'S), OR not_in_crosscheck (THE EX-DATE IS ACCEPTED
+# THOUGH THE CROSS-CHECK SOURCE DOES NOT LIST IT; accepted_value "accept")
+RESOLUTION_FIELD_STR_LIST = ["record_date", "pay_date", "amount_usd", "not_in_crosscheck"]
 # DEFINE THE LARGEST PLAUSIBLE AMOUNT AS A SHARE OF THE PREVIOUS CLOSE, AND THE TIME OF THE EX-DATE CLOCK
 MAX_YIELD_FLOAT = 0.03
 EX_DATE_OPEN_TIME_STR = "09:30:00"
@@ -106,47 +107,42 @@ def read_ssga_pdf(file_path_str_in):
         raise DividendError("State Street workbook: a SPY date is not MM/DD/YYYY.") from None
     return ssga_pdf.sort_values("ex_date").reset_index(drop=True)
 
-# FUNCTION: GET NASDAQ'S DIVIDEND HISTORY OF SPY
-def get_nasdaq_bytes(timeout_int_in=30):
+# FUNCTION: GET YAHOO FINANCE'S DIVIDEND HISTORY OF SPY AS CSV BYTES (ex_date, amount_usd)
+def get_yahoo_bytes():
     """
     Returns:
-        bytes: The JSON body as downloaded
+        bytes: CSV with one row per ex-date (New York date) and the amount as Yahoo gives it
     """
-    # SEND THE REQUEST
-    request = urllib.request.Request(NASDAQ_URL_STR, headers=NASDAQ_HEADER_DICT)
+    # ASK yfinance FOR THE FULL HISTORY (THE EX-DATE INDEX IS IN NEW YORK TIME)
     try:
-        with urllib.request.urlopen(request, timeout=timeout_int_in) as response:
-            return response.read()
-    except urllib.error.HTTPError as error:
-        raise DividendError(f"Nasdaq answered HTTP {error.code}. Save the page {NASDAQ_URL_STR} from a browser and pass it with --nasdaq-file.") from None
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise DividendError(f"Nasdaq could not be reached ({type(getattr(error, 'reason', error)).__name__}). Save {NASDAQ_URL_STR} from a browser and pass --nasdaq-file.") from None
+        import yfinance
+        dividend_series = yfinance.Ticker(TICKER_STR).dividends
+    except Exception as error:
+        raise DividendError(f"Yahoo Finance could not be read through yfinance ({type(error).__name__}). Try again later, or pass --yahoo-file.") from None
+    if dividend_series is None or len(dividend_series) == 0:
+        raise DividendError("Yahoo Finance returned no SPY dividend; the cross-check cannot run.")
+    # WRITE THE CSV (FULL PRECISION OF THE FLOAT YAHOO SENT)
+    index = dividend_series.index
+    date_list = [ts.tz_convert(config.NY_TZ_STR).strftime("%Y-%m-%d") if ts.tzinfo else ts.strftime("%Y-%m-%d") for ts in index]
+    crosscheck_pdf = pd.DataFrame({"ex_date": date_list, "amount_usd": [repr(float(value)) for value in dividend_series.values]})
+    return crosscheck_pdf.to_csv(index=False, lineterminator="\n").encode("utf-8")
 
-# FUNCTION: PARSE NASDAQ'S JSON
-def read_nasdaq_pdf(body_bytes_in):
+# FUNCTION: PARSE THE CROSS-CHECK CSV
+def read_crosscheck_pdf(body_bytes_in):
     """
     Args:
-        body_bytes_in (bytes): Nasdaq JSON
+        body_bytes_in (bytes): CSV ex_date (YYYY-MM-DD), amount_usd
 
     Returns:
-        pd.DataFrame: ex_date, record_date, pay_date, declared_date (YYYY-MM-DD or ""), amount_usd (text, "$" removed), type
+        pd.DataFrame: ex_date, amount_usd (text)
     """
-    # FIND THE ROWS
     try:
-        row_list = json.loads(body_bytes_in.decode("utf-8-sig"))["data"]["dividends"]["rows"] or []
-    except (ValueError, KeyError, TypeError):
-        raise DividendError("Nasdaq answer: not the expected JSON (data.dividends.rows).") from None
-    # CONVERT
-    try:
-        nasdaq_pdf = pd.DataFrame({"ex_date": [get_iso_date_str(row.get("exOrEffDate")) for row in row_list],
-                                   "record_date": [get_iso_date_str(row.get("recordDate")) for row in row_list],
-                                   "pay_date": [get_iso_date_str(row.get("paymentDate")) for row in row_list],
-                                   "declared_date": [get_iso_date_str(row.get("declarationDate")) for row in row_list],
-                                   "amount_usd": [str(row.get("amount", "")).replace("$", "").replace(",", "").strip() for row in row_list],
-                                   "type": [str(row.get("type", "")) for row in row_list]}, columns=["ex_date", "record_date", "pay_date", "declared_date", "amount_usd", "type"])
-    except ValueError:
-        raise DividendError("Nasdaq answer: a date is not MM/DD/YYYY.") from None
-    return nasdaq_pdf.sort_values("ex_date").reset_index(drop=True)
+        crosscheck_pdf = pd.read_csv(io.BytesIO(body_bytes_in), dtype=str, keep_default_na=False)
+    except (ValueError, pd.errors.ParserError):
+        raise DividendError("Cross-check file: not a CSV.") from None
+    if list(crosscheck_pdf.columns) != CROSSCHECK_COLUMN_STR_LIST or not crosscheck_pdf["ex_date"].str.fullmatch(r"\d{4}-\d{2}-\d{2}").all():
+        raise DividendError(f"Cross-check file: columns must be {CROSSCHECK_COLUMN_STR_LIST} with YYYY-MM-DD dates.")
+    return crosscheck_pdf.sort_values("ex_date").reset_index(drop=True)
 
 # FUNCTION: READ THE RESOLUTIONS
 def read_resolution_pdf(file_path_str_in):
@@ -154,8 +150,8 @@ def read_resolution_pdf(file_path_str_in):
     if not os.path.exists(file_path_str_in):
         return pd.DataFrame(columns=RESOLUTION_COLUMN_STR_LIST)
     resolution_pdf = pd.read_csv(file_path_str_in, dtype=str, keep_default_na=False)
-    if list(resolution_pdf.columns) != RESOLUTION_COLUMN_STR_LIST or not resolution_pdf["field"].isin(VALUE_FIELD_STR_LIST).all():
-        raise DividendError(f"{file_path_str_in}: columns must be {RESOLUTION_COLUMN_STR_LIST} and field one of {VALUE_FIELD_STR_LIST}.")
+    if list(resolution_pdf.columns) != RESOLUTION_COLUMN_STR_LIST or not resolution_pdf["field"].isin(RESOLUTION_FIELD_STR_LIST).all():
+        raise DividendError(f"{file_path_str_in}: columns must be {RESOLUTION_COLUMN_STR_LIST} and field one of {RESOLUTION_FIELD_STR_LIST}.")
     return resolution_pdf
 
 # FUNCTION: GET THE PREVIOUS NYSE SESSION OF EACH DATE, AND WHETHER THE DATE IS A SESSION
@@ -193,7 +189,7 @@ def get_spy_close_dict(date_str_list_in, raw_path_str_in=None):
     return close_dict
 
 # FUNCTION: BUILD THE ROWS AND THE ISSUES
-def get_dividend_tuple(ssga_pdf_in, nasdaq_pdf_in, resolution_pdf_in, published_pdf_in, run_id_str_in, today_str_in, now_ny_ts_in, close_dict_in=None):
+def get_dividend_tuple(ssga_pdf_in, crosscheck_pdf_in, resolution_pdf_in, published_pdf_in, run_id_str_in, today_str_in, now_ny_ts_in, close_dict_in=None):
     """
     Returns:
         tuple: (rows to add, issue dict {check: offending ex-dates}, count dict)
@@ -206,7 +202,8 @@ def get_dividend_tuple(ssga_pdf_in, nasdaq_pdf_in, resolution_pdf_in, published_
     issue_dict["blocking_resolution_unknown_ex_date"] = unknown_list
     resolved_set = set()
     for row in resolution_pdf_in.itertuples():
-        ssga_pdf.loc[ssga_pdf["ex_date"] == row.ex_date, row.field] = row.accepted_value
+        if row.field in VALUE_FIELD_STR_LIST:
+            ssga_pdf.loc[ssga_pdf["ex_date"] == row.ex_date, row.field] = row.accepted_value
         resolved_set.add((row.ex_date, row.field))
     count_dict["resolution_count_int"] = int(len(resolution_pdf_in))
     # CHECKS ON STATE STREET'S ROWS
@@ -222,30 +219,21 @@ def get_dividend_tuple(ssga_pdf_in, nasdaq_pdf_in, resolution_pdf_in, published_
     year_count_series = ssga_pdf["ex_date"].str[:4].value_counts()
     bad_year_list = [year_str for year_str, count_int in year_count_series.items() if (count_int != 4 and year_str < today_str_in[:4]) or count_int > 4]
     issue_dict["blocking_year_not_four_distributions"] = ssga_pdf.loc[ssga_pdf["ex_date"].str[:4].isin(bad_year_list), "ex_date"].tolist()
-    # CROSS-CHECK WITH NASDAQ: SAME DATES, AMOUNT EQUAL TO 4 DECIMALS (RESOLVED FIELDS EXCEPTED)
-    nasdaq_pdf = nasdaq_pdf_in.drop_duplicates("ex_date", keep="first").set_index("ex_date")
-    if nasdaq_pdf.empty:
-        raise DividendError("Nasdaq answer has no dividend row; the cross-check cannot run.")
-    matched_pdf = ssga_pdf[ssga_pdf["ex_date"].isin(nasdaq_pdf.index)]
-    count_dict["nasdaq_row_count_int"] = int(len(nasdaq_pdf))
-    count_dict["matched_row_count_int"] = int(len(matched_pdf))
-    issue_dict["reported_not_in_nasdaq"] = ssga_pdf.loc[~ssga_pdf["ex_date"].isin(nasdaq_pdf.index), "ex_date"].tolist()
-    disagree_list = []
-    for row in matched_pdf.itertuples():
-        nasdaq_row = nasdaq_pdf.loc[row.ex_date]
-        for field_str in VALUE_FIELD_STR_LIST:
-            ssga_value_str, nasdaq_value_str = getattr(row, field_str), nasdaq_row[field_str]
-            if field_str == "amount_usd":
-                same_bool = pd.notna(pd.to_numeric(nasdaq_value_str, errors="coerce")) and round(float(ssga_value_str or "nan"), 4) == round(float(nasdaq_value_str), 4)
-            else:
-                same_bool = ssga_value_str == nasdaq_value_str or nasdaq_value_str == ""
-            if not same_bool and (row.ex_date, field_str) not in resolved_set:
-                disagree_list.append(row.ex_date)
-    issue_dict["blocking_cross_source_disagreement"] = sorted(set(disagree_list))
-    # THE EX-DATE-OPEN CLOCK ASSUMES THE AMOUNT WAS DECLARED BEFORE THE EX-DATE: REPORT ANY NASDAQ DECLARATION ON OR AFTER IT
-    declared_series = ssga_pdf["ex_date"].map(nasdaq_pdf["declared_date"]).fillna("")
-    issue_dict["reported_declared_on_or_after_ex_date"] = ssga_pdf.loc[(declared_series != "") & (declared_series >= ssga_pdf["ex_date"]), "ex_date"].tolist()
-    issue_dict["reported_no_declared_date"] = ssga_pdf.loc[declared_series == "", "ex_date"].tolist()
+    # CROSS-CHECK WITH YAHOO: SAME EX-DATES, AMOUNT EQUAL TO 4 DECIMALS (RESOLVED AMOUNTS EXCEPTED)
+    crosscheck_pdf = crosscheck_pdf_in.drop_duplicates("ex_date", keep="first").set_index("ex_date")
+    if crosscheck_pdf.empty:
+        raise DividendError("Cross-check source has no dividend row; the cross-check cannot run.")
+    count_dict["crosscheck_row_count_int"] = int(len(crosscheck_pdf))
+    count_dict["matched_row_count_int"] = int(ssga_pdf["ex_date"].isin(crosscheck_pdf.index).sum())
+    accepted_missing_set = {date_str for date_str, field_str in resolved_set if field_str == "not_in_crosscheck"}
+    issue_dict["blocking_not_in_crosscheck"] = ssga_pdf.loc[~ssga_pdf["ex_date"].isin(crosscheck_pdf.index) & ~ssga_pdf["ex_date"].isin(accepted_missing_set), "ex_date"].tolist()
+    window_set = set(ssga_pdf_in.loc[ssga_pdf_in["ex_date"] <= today_str_in, "ex_date"])
+    issue_dict["reported_crosscheck_ex_date_not_in_ssga"] = sorted(date_str for date_str in crosscheck_pdf.index if FIRST_EX_DATE_STR <= date_str <= today_str_in and date_str not in window_set)
+    other_amount_series = ssga_pdf["ex_date"].map(crosscheck_pdf["amount_usd"])
+    disagree_bool_series = other_amount_series.notna() & (pd.to_numeric(other_amount_series, errors="coerce").round(4) != amount_series.round(4))
+    resolved_amount_set = {date_str for date_str, field_str in resolved_set if field_str == "amount_usd"}
+    issue_dict["blocking_cross_source_disagreement"] = sorted(set(ssga_pdf.loc[disagree_bool_series & ~ssga_pdf["ex_date"].isin(resolved_amount_set), "ex_date"]))
+    declared_series = pd.Series("", index=ssga_pdf.index)
     # SANITY: AMOUNT BELOW 3% OF THE PREVIOUS SESSION'S CLOSE (RAW SPY BARS)
     if close_dict_in is not None:
         close_series = ssga_pdf["ex_date"].map(previous_dict).map(close_dict_in)
@@ -294,7 +282,7 @@ def read_published_pdf(file_path_str_in):
     return published_pdf
 
 # FUNCTION: RUN (READ, CROSS-CHECK, CHECK, AND PUBLISH WHEN apply)
-def run_dividend_dict(ssga_file_path_str_in, apply_bool_in, run_id_str_in, nasdaq_file_path_str_in=None, nasdaq_getter_in=None, today_str_in=None,
+def run_dividend_dict(ssga_file_path_str_in, apply_bool_in, run_id_str_in, crosscheck_file_path_str_in=None, crosscheck_getter_in=None, today_str_in=None,
                       now_ny_ts_in=None, check_close_bool_in=True):
     """
     Returns:
@@ -307,12 +295,12 @@ def run_dividend_dict(ssga_file_path_str_in, apply_bool_in, run_id_str_in, nasda
     today_str = today_str_in or now_ny_ts.strftime("%Y-%m-%d")
     # READ THE INPUTS
     ssga_pdf = read_ssga_pdf(ssga_file_path_str_in)
-    if nasdaq_file_path_str_in:
-        with open(nasdaq_file_path_str_in, "rb") as file:
-            nasdaq_bytes = file.read()
+    if crosscheck_file_path_str_in:
+        with open(crosscheck_file_path_str_in, "rb") as file:
+            crosscheck_bytes = file.read()
     else:
-        nasdaq_bytes = (nasdaq_getter_in or get_nasdaq_bytes)()
-    nasdaq_pdf = read_nasdaq_pdf(nasdaq_bytes)
+        crosscheck_bytes = (crosscheck_getter_in or get_yahoo_bytes)()
+    crosscheck_pdf = read_crosscheck_pdf(crosscheck_bytes)
     resolution_path_str = f"{config.INGEST_RECORD_PATH_STR}resolutions/{RESOLUTION_FILE_NAME_STR}"
     resolution_pdf = read_resolution_pdf(resolution_path_str)
     published_pdf = read_published_pdf(file_path_str)
@@ -323,7 +311,7 @@ def run_dividend_dict(ssga_file_path_str_in, apply_bool_in, run_id_str_in, nasda
         previous_list = [date_str for date_str in get_session_info_pdf(used_list)["previous_session_str"] if date_str] if used_list else []
         close_dict = get_spy_close_dict(previous_list)
     # BUILD AND CHECK
-    add_pdf, issue_dict, count_dict = get_dividend_tuple(ssga_pdf, nasdaq_pdf, resolution_pdf, published_pdf, run_id_str_in, today_str, now_ny_ts, close_dict)
+    add_pdf, issue_dict, count_dict = get_dividend_tuple(ssga_pdf, crosscheck_pdf, resolution_pdf, published_pdf, run_id_str_in, today_str, now_ny_ts, close_dict)
     summary_dict = get_summary_dict(issue_dict, count_dict, config.PRINT_DATES_BEFORE_STR)
     summary_dict["published_row_count_int"] = int(len(published_pdf))
     blocking_list = [name_str for name_str, date_list in issue_dict.items() if name_str.startswith("blocking") and date_list]
@@ -336,8 +324,8 @@ def run_dividend_dict(ssga_file_path_str_in, apply_bool_in, run_id_str_in, nasda
     download_path_str = f"{config.INGEST_RECORD_PATH_STR}downloads/{DIVIDEND_FOLDER_NAME_STR}/{run_id_str_in}/"
     os.makedirs(download_path_str, exist_ok=True)
     shutil.copy2(ssga_file_path_str_in, f"{download_path_str}ssga_historical_distributions.xlsx")
-    with open(f"{download_path_str}nasdaq_spy_dividends.json", "wb") as file:
-        file.write(nasdaq_bytes)
+    with open(f"{download_path_str}yahoo_spy_dividends.csv", "wb") as file:
+        file.write(crosscheck_bytes)
     if os.path.exists(resolution_path_str):
         shutil.copy2(resolution_path_str, download_path_str)
     summary_dict["download_file_list"] = [{"file_str": name_str, "sha256_str": get_file_sha256_str(f"{download_path_str}{name_str}")} for name_str in sorted(os.listdir(download_path_str))]

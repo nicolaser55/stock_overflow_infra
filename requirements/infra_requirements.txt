@@ -12,3 +12,4 @@ toolz==1.1.0 # need this version of toolz for pandas_market_calendars
 pandas_market_calendars==5.2.4
 keyring==25.6.0 # FRED API key in Windows Credential Manager (scripts/machine/store_fred_key.py)
 openpyxl==3.1.5 # reads State Street's dividend workbook (ingest/dividends.py)
+yfinance==1.8.0 # SPY dividend cross-check (Yahoo Finance; ingest/dividends.py)
