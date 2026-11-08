@@ -1,0 +1,31 @@
+# Machine settings (folders, addresses): never committed
+config/local.toml
+# Virtual environments
+venv*/
+.venv/
+# Python caches and build files
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+# Notebook checkpoints
+.ipynb_checkpoints/
+# Keys and secrets
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+*service_account*.json
+*credentials*.json
+# Temporary files of the atomic writes
+*.tmp
+# Data, logs and run records never go into git (they live in the quarantine tree)
+*.csv
+*.parquet
+*.pkl
+*.log
+logs/
+probe_output/
+_ingest/

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-overflow-infra"
+version = "2026.11.8"
+description = "Stock Overflow (SO): data ingest into the quarantine tree, and machine-side tooling. Does not import the research package."
+requires-python = ">=3.12,<3.13"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ingest*"]

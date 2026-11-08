@@ -1,0 +1,12 @@
+# gitleaks settings: the default rules, plus IBKR account ids. The test files hold fake values on purpose (all zeros).
+[extend]
+useDefault = true
+
+[[rules]]
+id = "ibkr-account-id"
+description = "IBKR account id"
+regex = '''\b(?:DU|DF|U|F)[1-9]\d{6,7}\b'''
+
+[allowlist]
+description = "fake values used by the tests"
+paths = ['''tests/test_repo_guard\.py''', '''tests/test_index_pipeline\.py''']

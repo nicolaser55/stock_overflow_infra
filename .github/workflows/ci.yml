@@ -1,0 +1,44 @@
+# CI of stock_overflow_infra (public repository): tests on Linux and Windows with a simulated IBKR server, the repository guard
+# (no data, notebook outputs, machine settings or credentials), and a secrets scan of the whole history.
+# Runs on every push and pull request. It reports; it does not block pushes (pushes go straight to main).
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (ibapi 9.81.1.post1 from PyPI; the machines use 10.45.1 from the TWS API source)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements/ci_requirements.txt
+          python -m pip install -e .
+      - name: Tests
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tests/run_all_tests.py
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

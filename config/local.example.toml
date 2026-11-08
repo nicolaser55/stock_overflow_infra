@@ -1,0 +1,13 @@
+# Machine settings of stock_overflow_infra. Copy this file to config/local.toml (git-ignored) on each machine and fill it in.
+# Never commit config/local.toml: it names folders and addresses of your machines.
+
+# The complete data tree (the quarantine), NEVER the development view (SO_DATA_PATH).
+#   On the desktop: the local quarantine folder, e.g. "D:/<folder>/quarantine/"
+#   On the laptop:  the network share that points to it, e.g. "//<desktop address>/<share name>/"
+# The environment variable SO_INGEST_TARGET_ROOT overrides this value (the tests use it).
+target_root = ""
+
+# IB Gateway on this machine (4001 Gateway live, 4002 Gateway paper). Turn on "Read-Only API" in the Gateway's API settings.
+ibkr_host = "127.0.0.1"
+ibkr_port = 4001
+ibkr_client_id = 1

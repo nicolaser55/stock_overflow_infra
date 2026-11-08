@@ -1,0 +1,18 @@
+"""
+Stock Overflow Ingest (package of stock_overflow_infra)
+
+    ingest.config           every constant: target root (the quarantine), folder names, IBKR connection, contract, request and pacing settings
+    ingest.records          run manifests, source locks, checksums, secret redaction
+    ingest.ibkr_client      IBKR connection: per-request results, version-agnostic callbacks, account list dropped
+    ingest.ibkr_download    SPY: session selection, concurrent download, minute-by-minute check, staging files, download log
+    ingest.sessions         New York clock, NYSE schedule, session checks, issue report
+    ingest.raw_files        file names, text-preserving read / write, roll-up rules, merge engine
+    ingest.raw_maintenance  SPY: merge staging into raw, organize, clean orphans, rebuild, issue report
+    ingest.index_config     VIX / VIX3M settings and folders
+    ingest.index_download   VIX / VIX3M download (daily and 1-minute)
+    ingest.index_merge      VIX / VIX3M merge staging into raw
+    ingest.index_status     VIX / VIX3M folder status
+
+This package does not import the research workspace (package so). The interface between the two is the file layout described
+in docs/DATA_CONTRACT.md.
+"""
