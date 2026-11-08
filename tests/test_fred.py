@@ -204,6 +204,44 @@ def test_script():
     assert result.returncode == 1 and "store01_rawzone" in result.stdout + result.stderr, result.stdout + result.stderr
     passed("script: no key -> clean stop; target root check")
 
+# TEST: A RUN THAT FAILS INSIDE ITS START (E.G. A CONSOLE THAT CANNOT PRINT) RELEASES ITS LOCK; --break-lock MARKS AN OLD RUN ABANDONED
+def test_run_start_failure():
+    import builtins
+    from ingest.records import ScriptRun
+    record_path_str = tempfile.mkdtemp(prefix="so_fred_records_").replace("\\", "/") + "/"
+    real_print = builtins.print
+    def failing_print(*args_in, **kwargs_in):
+        if args_in and str(args_in[0]).startswith("ℹ️ Run "):
+            raise UnicodeEncodeError("charmap", "ℹ", 0, 1, "character maps to <undefined>")
+        return real_print(*args_in, **kwargs_in)
+    builtins.print = failing_print
+    try:
+        with ScriptRun("test", {}, "fred_dtb3", record_path_str_in=record_path_str):
+            raise AssertionError("body must not run")
+    except UnicodeEncodeError:
+        pass
+    finally:
+        builtins.print = real_print
+    assert not os.path.exists(f"{record_path_str}locks/fred_dtb3.lock")
+    manifest_list = glob.glob(f"{record_path_str}runs/*.json")
+    assert len(manifest_list) == 1 and json.load(open(manifest_list[0], encoding="utf-8"))["status_str"] == "failed"
+    # A LOCK LEFT BY A RUN THAT IS GONE: --break-lock REMOVES IT AND MARKS THAT RUN'S MANIFEST abandoned
+    os.makedirs(f"{record_path_str}locks", exist_ok=True)
+    with open(f"{record_path_str}runs/OLDRUN.json", "w", encoding="utf-8") as file:
+        json.dump({"run_id_str": "OLDRUN", "status_str": "running"}, file)
+    with open(f"{record_path_str}locks/fred_dtb3.lock", "w", encoding="utf-8") as file:
+        json.dump({"run_id_str": "OLDRUN"}, file)
+    with ScriptRun("test", {}, "fred_dtb3", break_lock_bool_in=True, record_path_str_in=record_path_str) as run:
+        new_run_id_str = run.run_id_str
+    old_dict = json.load(open(f"{record_path_str}runs/OLDRUN.json", encoding="utf-8"))
+    assert old_dict["status_str"] == "abandoned" and old_dict["abandoned_by_run_id_str"] == new_run_id_str
+    assert not os.path.exists(f"{record_path_str}locks/fred_dtb3.lock")
+    # OUTPUT THROUGH A PIPE IN cp1252 STILL PRINTS (ingest RECONFIGURES THE STREAMS TO UTF-8)
+    env_dict = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONPATH": REPO_PATH_STR, "SO_INGEST_TARGET_ROOT": TEST_ROOT_PATH_STR}
+    result = subprocess.run([sys.executable, "-c", "import ingest; print('ℹ️ ✅ ❌')"], env=env_dict, capture_output=True)
+    assert result.returncode == 0 and result.stdout.decode("utf-8").strip() == "ℹ️ ✅ ❌", result
+    passed("run start failure releases the lock and records failed; --break-lock marks the old run abandoned; UTF-8 output through a cp1252 pipe")
+
 # RUN THE TESTS
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -213,4 +251,5 @@ if __name__ == "__main__":
     test_publish()
     test_key_never_shown()
     test_script()
+    test_run_start_failure()
     print("\nAll FRED tests passed ✅")

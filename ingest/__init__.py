@@ -17,3 +17,13 @@ Stock Overflow Ingest (package of stock_overflow_infra)
 This package does not import the research workspace (package so). The interface between the two is the file layout described
 in docs/DATA_CONTRACT.md.
 """
+
+import sys as _sys
+
+# PRINT IN UTF-8 EVEN WHEN THE OUTPUT IS A PIPE OR A FILE ON WINDOWS (THE DEFAULT THERE IS CP1252, WHICH CANNOT PRINT THE STATUS
+# SYMBOLS AND WOULD STOP A RUN AFTER IT HAS STARTED)
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass

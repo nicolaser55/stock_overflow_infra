@@ -163,6 +163,7 @@ class SourceLock:
         # REMOVE A LOCK THE USER DECLARED STALE
         if self.break_lock_bool and os.path.exists(self.file_path_str):
             print(f"⚠️ Removing the lock {self.file_path_str} (--break-lock); it was held by: {self.get_holder_str()}")
+            self.mark_holder_abandoned()
             os.remove(self.file_path_str)
         # CREATE THE LOCK FILE ONLY IF IT DOES NOT EXIST
         try:
@@ -175,6 +176,24 @@ class SourceLock:
             json.dump({"run_id_str": self.run_id_str, "host_str": socket.gethostname(), "pid_int": os.getpid(),
                        "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}, file)
         self.held_bool = True
+
+    # METHOD: MARK THE MANIFEST OF A BROKEN LOCK'S HOLDER AS ABANDONED (ONLY IF IT STILL SAYS "running")
+    def mark_holder_abandoned(self):
+        # READ THE HOLDER'S RUN ID; ITS MANIFEST IS IN runs/ NEXT TO locks/
+        try:
+            with open(self.file_path_str, encoding="utf-8") as file:
+                holder_run_id_str = json.load(file).get("run_id_str", "")
+            manifest_path_str = f"{os.path.dirname(os.path.dirname(self.file_path_str))}/runs/{holder_run_id_str}.json"
+            with open(manifest_path_str, encoding="utf-8") as file:
+                manifest_dict = json.load(file)
+        except (OSError, ValueError):
+            return
+        # RECORD WHO BROKE THE LOCK AND WHEN; THE REST OF THE MANIFEST IS KEPT
+        if manifest_dict.get("status_str") == "running":
+            manifest_dict.update({"status_str": "abandoned", "abandoned_by_run_id_str": self.run_id_str,
+                                  "abandoned_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+            write_json_atomic(manifest_dict, manifest_path_str)
+            print(f"⚠️ Run {holder_run_id_str} marked abandoned in its manifest")
 
     # METHOD: DESCRIBE THE HOLDER OF AN EXISTING LOCK
     def get_holder_str(self):
@@ -273,7 +292,13 @@ class ScriptRun:
             if self.lock:
                 self.lock.release()
             raise
-        print(f"ℹ️ Run {self.run_id_str} (manifest {self.manifest_path_str})")
+        # ANY FAILURE FROM HERE UNTIL THE BODY STARTS (E.G. A CONSOLE THAT CANNOT PRINT) MARKS THE RUN FAILED AND RELEASES THE LOCK;
+        # __exit__ IS NOT CALLED WHEN __enter__ RAISES
+        try:
+            print(f"ℹ️ Run {self.run_id_str} (manifest {self.manifest_path_str})")
+        except BaseException as error:
+            self.__exit__(type(error), error, None)
+            raise
         return self
 
     # METHOD: END THE RUN
