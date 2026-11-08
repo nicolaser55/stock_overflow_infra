@@ -12,6 +12,7 @@ Stock Overflow Ingest (package of stock_overflow_infra)
     ingest.index_download   VIX / VIX3M download (daily and 1-minute)
     ingest.index_merge      VIX / VIX3M merge staging into raw
     ingest.index_status     VIX / VIX3M folder status
+    ingest.fred             FRED / ALFRED series with first-release and revision rows (DTB3): fetch, check, append-only publish
 
 This package does not import the research workspace (package so). The interface between the two is the file layout described
 in docs/DATA_CONTRACT.md.

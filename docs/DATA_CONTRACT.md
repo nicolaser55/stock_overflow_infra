@@ -1,6 +1,7 @@
 # Data contract: what this repository writes for `stock_overflow_workspace`
 
-**Contract version 1 (2026-11-08).** The research workspace reads files only and never imports this repository. This document
+**Contract version 2, draft (2026-11-08): version 1 plus the 3-month T-bill rate (DTB3). SPY dividends are added before
+version 2 is final; no research loader reads version 2 yet.** The research workspace reads files only and never imports this repository. This document
 is the whole interface between the two. A change to any folder name, file name, column or meaning below raises the version.
 That change lands in this file, in `tests/contract_reader.py`, and in the research side (`so/paths.py`, the loaders,
 `docs/DATA_SOURCES.md`) at the same time. The research files are protected, so Nicolas approves each change.
@@ -24,7 +25,9 @@ Every script refuses a target root that:
 ├── ibkr_spy_1min_staging/               SPY downloads not yet merged, merged/, download_log_v2.csv, merge_log_v2.csv
 ├── ibkr_vix_family_staging/             the same for VIX / VIX3M
 ├── <raw folder>_backup_YYYYMMDD_HHMMSS/ copies made before any raw file is changed
-└── _ingest/                             ingest records: runs/<run id>.json (manifests), locks/<name>.lock
+├── fred_dtb3/dtb3.csv                    3-month T-bill rate, every first release and revision (version 2)
+└── _ingest/                             ingest records: runs/<run id>.json (manifests), locks/<name>.lock,
+                                         downloads/<source>/<run id>/ (responses as downloaded)
 ```
 
 The research reads only the raw folders. The staging, backup and `_ingest` folders are not named in `so.paths`, so the
@@ -63,10 +66,43 @@ refresh never copies them into the development view.
 - The old logs (`download_log.csv`, `merge_log.csv`, written by the old ingest repository) are kept as they are. The new code
   refuses to append to a log whose header differs from its own.
 
-## Sources to come (contract version 2, delivery D2)
+## Non-bar sources: common rules (version 2)
 
-- `spy_dividends/spy_dividends.csv` (SPY dividends);
-- `fred_dtb3/dtb3.csv` (3-month T-bill rate).
+- **`date` is the New York date of `available_ts`**, never the date the value describes (that has its own column). The
+  development-view refresh cuts undated files on `date`, so a row is in the view only once it was public.
+- **`available_ts`** is text, New York time with its offset, e.g. `2005-01-04 16:30:00-05:00`.
+- **Append-only.** A published row is never edited or removed. A correction is a new row with its own `available_ts`.
+  A source that changes an already-published vintage stops the run; nothing is written.
+- **Responses are kept as downloaded** under `_ingest/downloads/<source>/<run id>/`, with their SHA-256 in the run manifest.
+- **Output is counts only.** A printed line or a manifest names a date only if it is before `print_dates_before` (machine
+  setting, at or before the start of the holdout window), and never a value.
 
-Their columns, clocks and revision rules are fixed in `claude/DATA_INGEST_REVIEW_2026-11-08.md` §7.9 and §11 of the project. They
-will be added here with their code.
+## `fred_dtb3/dtb3.csv`: 3-month Treasury bill, secondary market, discount basis (FRED DTB3, H.15)
+
+| Column | Meaning |
+|---|---|
+| `date` | New York date of `available_ts` |
+| `available_ts` | When the value was public (below) |
+| `observation_date` | The business day the rate describes |
+| `value_pct` | Percent, discount basis, **text as FRED sent it**; `.` = no value that day |
+| `vintage_realtime_start` | ALFRED real-time start of this value (the day FRED first showed it) |
+| `vintage_kind` | `first_seen`, `rule_based_backfill` or `revision` |
+| `ingest_run_id` | Run that first published the row |
+
+- **Key:** `(observation_date, vintage_realtime_start)`. One row per observation is not `revision`; it is its first release.
+- **`first_seen`:** `available_ts` = `vintage_realtime_start` at 16:30 New York.
+- **`rule_based_backfill`:** an observation older than the series' earliest ALFRED vintage has no record of its first posting.
+  `available_ts` = the next US federal business day after `observation_date`, at 16:30 New York. This is an assumption, not a
+  record.
+- **`revision`:** a later real-time period whose value differs from the one before; `available_ts` = its
+  `vintage_realtime_start` at 16:30 New York. Periods that repeat the same value are not rows.
+- **Not done here (research, R4b):** the conversion from discount basis to an investment yield, the accrual over calendar days,
+  and carrying the last value over sessions with no value.
+- **Checks before a publish** (any failure stops it): one row per key; one first release per observation; no observation or
+  vintage after the retrieval date; `available_ts` after the observation date; values parse and lie in [−1, 20].
+  **Reported:** observations on a weekend or federal holiday, weekdays with no observation (holiday or not), first releases
+  of `.`, and observations whose first release differs from the latest.
+
+## Sources to come (version 2)
+
+- `spy_dividends/spy_dividends.csv` (SPY dividends).

@@ -11,3 +11,7 @@ target_root = ""
 ibkr_host = "127.0.0.1"
 ibkr_port = 4001
 ibkr_client_id = 1
+
+# Non-bar sources (FRED, dividends) print counts only, and name a date only if it is before this one.
+# Keep it at or before the start of the active holdout window.
+print_dates_before = "2025-01-01"

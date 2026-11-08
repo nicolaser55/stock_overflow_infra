@@ -60,3 +60,21 @@ changed since the raw file was downloaded, or a bad-tick correction was applied 
 
 `python tests\run_all_tests.py`. This takes about 30 seconds. The tests use a simulated IBKR server and temporary folders only;
 they never read `config/local.toml` or any real data.
+
+## 3-month T-bill rate (FRED DTB3)
+
+One time per machine, store the FRED API key in Windows Credential Manager (input hidden; keep your own copy in Enpass):
+
+```powershell
+.\venv-infra\Scripts\python.exe scripts\machine\store_fred_key.py
+.\venv-infra\Scripts\python.exe scripts\machine\store_fred_key.py --check
+```
+
+Then, by hand, whenever the rate should be brought up to date:
+
+```powershell
+.\venv-infra\Scripts\python.exe scripts\ingest\download_fred_series.py            # dry run: fetch, check, compare (nothing written)
+.\venv-infra\Scripts\python.exe scripts\ingest\download_fred_series.py --apply    # save the responses, add new rows
+```
+
+A run that stops (exit 1) wrote nothing. The summary is counts only.

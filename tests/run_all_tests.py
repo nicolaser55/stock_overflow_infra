@@ -15,12 +15,13 @@ folder before ingest is imported, and this runner also sets it to an empty tempo
     tests/test_repo_guard.py       this public repository holds no data, outputs, machine settings or credentials
     tests/test_ingest.py           IBKR client, sessions, SPY download, raw files, maintenance, reader compatibility
     tests/test_index_pipeline.py   VIX / VIX3M download and merge; target root check, run manifests, locks, log headers, secrets
+    tests/test_fred.py             FRED / ALFRED vintages (DTB3): paging, first-release and revision rows, clocks, checks, append-only publish
 
 Output is forced to UTF-8 (the suites print emoji; a Windows console or pipe in cp1252 would otherwise crash the print).
 """
 
 # DEFINE THE SUITES
-SUITE_LIST = ["test_repo_guard.py", "test_ingest.py", "test_index_pipeline.py"]
+SUITE_LIST = ["test_repo_guard.py", "test_ingest.py", "test_index_pipeline.py", "test_fred.py"]
 # DEFINE THE TESTS FOLDER
 TESTS_PATH_STR = os.path.dirname(os.path.abspath(__file__))
 

@@ -2,7 +2,8 @@
 
 Machine-side code of the Stock Overflow project:
 - **`ingest/`** downloads market data from IBKR (SPY 1-minute bars; VIX and VIX3M daily and 1-minute bars), checks it and adds
-  it to the project's complete data tree, the quarantine.
+  it to the project's complete data tree, the quarantine. It also brings in the 3-month T-bill rate (FRED DTB3) with every
+  first release and revision, and (next) SPY dividends.
 - **`backup/`** (to come) will hold the NAS backup and archive jobs.
 
 The research itself lives in [`stock_overflow_workspace`](https://github.com/nicolaser55/stock_overflow_workspace). That
@@ -55,6 +56,9 @@ has the full sequence, with the steps that follow in the research workspace.
 | Status and issues (read only) | `scripts\ingest\find_ohlcv_data_issues.py` | `scripts\ingest\index_data_status.py` |
 | Compare a re-download with raw (read only) | `scripts\ingest\check_redownload_against_raw.py` | – |
 
+**3-month T-bill rate (FRED DTB3):** store the API key once with `scripts\machine\store_fred_key.py`, then
+`scripts\ingest\download_fred_series.py` (dry run) and `--apply`. No IB Gateway needed.
+
 Only one IBKR session per username can be signed in at a time. Signing in on one machine signs the other out.
 
 ## Layout
@@ -62,7 +66,7 @@ Only one IBKR session per username can be signed in at a time. Signing in on one
 ```
 ingest/              the package (see ingest/__init__.py)
 scripts/ingest/      command-line tools (dry run by default for every tool that changes raw files)
-scripts/machine/     Windows setup helpers (access rights), run by hand in an administrator PowerShell
+scripts/machine/     machine helpers run by hand: access rights (administrator PowerShell), FRED key into Credential Manager
 tests/               plain-assert suites, simulated IBKR server, temporary folders only
 docs/                data contract, runbook, what changed from the old ingest repository
 config/              local.example.toml (template); local.toml is machine-specific and git-ignored
