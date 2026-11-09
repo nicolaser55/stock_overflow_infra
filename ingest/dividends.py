@@ -17,7 +17,7 @@ Inputs:
     - State Street's "SPDR Historical Distributions" workbook (ssga.com, SPDR Dividend Distributions page, XLSX), downloaded by hand;
       one sheet, header FUND NAME, TICKER, CUSIP, EX-DATE, RECORD DATE, PAYABLE DATE, DIVIDEND ($), ..., every cell text (MM/DD/YYYY,
       amounts with 6 decimals). Only SPY rows with an ex-date from 2005-01-01 up to today (New York) are used.
-    - Yahoo Finance's dividend history of SPY (ex-date and amount), fetched with yfinance and kept as a CSV (ex_date, amount_usd);
+    - Yahoo Finance's dividend history of SPY (ex-date and amount, rounded by Yahoo to 3 decimals), fetched with yfinance and kept as a CSV (ex_date, amount_usd);
       or such a CSV given by hand (--yahoo-file). Nasdaq was the approved cross-check but gives no history for non-Nasdaq symbols
       (SPY is listed on NYSE Arca); Nicolas chose Yahoo on 2026-11-08. Yahoo has no record or pay dates: those get internal checks only.
     - Optional resolutions (store01_rawzone/_ingest/resolutions/spy_dividends_resolutions.csv, in the quarantine, never in this
@@ -54,6 +54,9 @@ RESOLUTION_COLUMN_STR_LIST = ["ex_date", "field", "accepted_value", "note"]
 # DEFINE THE RESOLUTION FIELDS: A VALUE FIELD (accepted_value REPLACES STATE STREET'S), OR not_in_crosscheck (THE EX-DATE IS ACCEPTED
 # THOUGH THE CROSS-CHECK SOURCE DOES NOT LIST IT; accepted_value "accept")
 RESOLUTION_FIELD_STR_LIST = ["record_date", "pay_date", "amount_usd", "not_in_crosscheck"]
+# DEFINE THE CROSS-CHECK TOLERANCE: YAHOO ROUNDS TO 3 DECIMALS, SO THE AMOUNTS AGREE WHEN THEY DIFFER BY AT MOST HALF A UNIT OF
+# THE THIRD DECIMAL (DECIDED 2026-11-09; A TINY MARGIN ABSORBS FLOAT ERROR)
+CROSSCHECK_TOLERANCE_FLOAT = 0.0005 + 1e-9
 # DEFINE THE LARGEST PLAUSIBLE AMOUNT AS A SHARE OF THE PREVIOUS CLOSE, AND THE TIME OF THE EX-DATE CLOCK
 MAX_YIELD_FLOAT = 0.03
 EX_DATE_OPEN_TIME_STR = "09:30:00"
@@ -219,7 +222,7 @@ def get_dividend_tuple(ssga_pdf_in, crosscheck_pdf_in, resolution_pdf_in, publis
     year_count_series = ssga_pdf["ex_date"].str[:4].value_counts()
     bad_year_list = [year_str for year_str, count_int in year_count_series.items() if (count_int != 4 and year_str < today_str_in[:4]) or count_int > 4]
     issue_dict["blocking_year_not_four_distributions"] = ssga_pdf.loc[ssga_pdf["ex_date"].str[:4].isin(bad_year_list), "ex_date"].tolist()
-    # CROSS-CHECK WITH YAHOO: SAME EX-DATES, AMOUNT EQUAL TO 4 DECIMALS (RESOLVED AMOUNTS EXCEPTED)
+    # CROSS-CHECK WITH YAHOO: SAME EX-DATES, AMOUNTS WITHIN CROSSCHECK_TOLERANCE_FLOAT (RESOLVED AMOUNTS EXCEPTED)
     crosscheck_pdf = crosscheck_pdf_in.drop_duplicates("ex_date", keep="first").set_index("ex_date")
     if crosscheck_pdf.empty:
         raise DividendError("Cross-check source has no dividend row; the cross-check cannot run.")
@@ -230,7 +233,8 @@ def get_dividend_tuple(ssga_pdf_in, crosscheck_pdf_in, resolution_pdf_in, publis
     window_set = set(ssga_pdf_in.loc[ssga_pdf_in["ex_date"] <= today_str_in, "ex_date"])
     issue_dict["reported_crosscheck_ex_date_not_in_ssga"] = sorted(date_str for date_str in crosscheck_pdf.index if FIRST_EX_DATE_STR <= date_str <= today_str_in and date_str not in window_set)
     other_amount_series = ssga_pdf["ex_date"].map(crosscheck_pdf["amount_usd"])
-    disagree_bool_series = other_amount_series.notna() & (pd.to_numeric(other_amount_series, errors="coerce").round(4) != amount_series.round(4))
+    gap_series = (pd.to_numeric(other_amount_series, errors="coerce") - amount_series).abs()
+    disagree_bool_series = other_amount_series.notna() & ~(gap_series <= CROSSCHECK_TOLERANCE_FLOAT)
     resolved_amount_set = {date_str for date_str, field_str in resolved_set if field_str == "amount_usd"}
     issue_dict["blocking_cross_source_disagreement"] = sorted(set(ssga_pdf.loc[disagree_bool_series & ~ssga_pdf["ex_date"].isin(resolved_amount_set), "ex_date"]))
     declared_series = pd.Series("", index=ssga_pdf.index)

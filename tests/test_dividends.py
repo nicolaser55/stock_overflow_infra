@@ -58,7 +58,7 @@ def get_yahoo_bytes(row_list_in, amount_override_dict_in=None, drop_set_in=()):
         if ex_str in drop_set_in:
             continue
         iso_str = f"{ex_str[6:]}-{ex_str[:2]}-{ex_str[3:5]}"
-        line_list.append(f"{iso_str},{amount_override_dict.get(ex_str, repr(float(amount_str)))}")
+        line_list.append(f"{iso_str},{amount_override_dict.get(ex_str, repr(round(float(amount_str), 3)))}")
     return ("\n".join(line_list) + "\n").encode("utf-8")
 
 # FUNCTION: WRITE A RAW SPY DAY FILE WITH TWO BARS (THE LAST CLOSE IS close)
@@ -86,7 +86,7 @@ def test_read():
     first_dict = ssga_pdf[ssga_pdf["ex_date"] == "2005-03-18"].iloc[0].to_dict()
     assert first_dict == {"ex_date": "2005-03-18", "record_date": "2005-03-22", "pay_date": "2005-04-29", "amount_usd": "0.467090"}, first_dict
     crosscheck_pdf = dividends.read_crosscheck_pdf(get_yahoo_bytes(SPY_ROW_LIST))
-    assert crosscheck_pdf.loc[crosscheck_pdf["ex_date"] == "2005-03-18", "amount_usd"].iloc[0] == "0.46709"
+    assert crosscheck_pdf.loc[crosscheck_pdf["ex_date"] == "2005-03-18", "amount_usd"].iloc[0] == "0.467"
     try:
         dividends.read_crosscheck_pdf(b"date,value\n2005-03-18,1\n")
         raise AssertionError("wrong columns accepted")
@@ -121,13 +121,13 @@ def test_dry_run():
     assert not os.path.exists(f"{config.RAWZONE_PATH_STR}spy_dividends")
     # THE SUMMARY HOLDS NO AMOUNT
     summary_str = json.dumps(summary_dict)
-    assert "0.467090" not in summary_str and "0.46709" not in summary_str
+    assert "0.467090" not in summary_str and "0.467" not in summary_str
     passed("dry run: 2005-2006 rows used (2004 and future ex-dates left out), cross-check matched, nothing written, no amount shown")
 
 # TEST: BLOCKING CHECKS AND A RESOLUTION
 def test_checks():
     # YAHOO DISAGREES ON ONE AMOUNT -> STOPPED
-    disagree_bytes = get_yahoo_bytes(SPY_ROW_LIST, {"06/17/2005": "0.4877"})
+    disagree_bytes = get_yahoo_bytes(SPY_ROW_LIST, {"06/17/2005": "0.4871"})   # 0.00052 from 0.487620: just outside the tolerance
     summary_dict = run(False, "RUN1", disagree_bytes)
     assert summary_dict["blocking_cross_source_disagreement"]["count_int"] == 1 and "stopped_str" in summary_dict
     # A RESOLUTION (FROM THE ANNUAL REPORT) SETTLES IT

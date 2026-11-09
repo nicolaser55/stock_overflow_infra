@@ -133,7 +133,8 @@ refresh never copies them into the development view.
   added with `available_ts` = the retrieval time (New York). The earlier row stays. A consumer takes, for each
   `(ex_date, distribution_type)`, the latest row with `available_ts` at or before its decision time.
 - **Cross-check (blocking), decided 2026-11-08:** Yahoo Finance (through `yfinance`), archived as
-  `yahoo_spy_dividends.csv` with each run. Every ex-date must be listed by Yahoo with the same amount to 4 decimals. Nasdaq, the
+  `yahoo_spy_dividends.csv` with each run. Every ex-date must be listed by Yahoo, with an amount within 0.0005 of State Street's (Yahoo rounds
+  to 3 decimals; decided 2026-11-09), so Yahoo confirms each amount to about ±0.0005 USD, not to State Street's 6 decimals. Nasdaq, the
   first choice, gives no history for symbols not listed on Nasdaq (SPY is on NYSE Arca). Yahoo has no record or pay dates; those
   get the internal checks only. A disagreement or a missing ex-date stops the run until Nicolas settles it from the annual report,
   in `_ingest/resolutions/spy_dividends_resolutions.csv` (columns `ex_date, field, accepted_value, note`; `field` is
