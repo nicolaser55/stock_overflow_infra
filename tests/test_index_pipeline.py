@@ -398,6 +398,54 @@ def test_target_root_check():
     assert not os.path.exists(f"{good_root_str}store01_rawzone/_ingest")
     passed("target root: unset / no raw zone / development view / SO_DATA_PATH refused (scripts exit 1 first); a listing records nothing")
 
+# TEST: EVERY FOLDER GIVEN ON THE COMMAND LINE IS CHECKED (INSIDE THE RAW ZONE, NOT IN A DEVELOPMENT VIEW, NOT IN SO_DATA_PATH)
+def test_write_path_check():
+    # A GOOD ROOT, A FOLDER OUTSIDE IT, AND A VIEW-LIKE FOLDER INSIDE ITS RAW ZONE
+    root_str = tempfile.mkdtemp(prefix="so_write_root_").replace("\\", "/") + "/"
+    os.makedirs(f"{root_str}store01_rawzone/ibkr_spy_1min")
+    outside_str = tempfile.mkdtemp(prefix="so_write_outside_").replace("\\", "/") + "/"
+    os.makedirs(f"{root_str}store01_rawzone/viewlike/inner")
+    open(f"{root_str}store01_rawzone/viewlike/VIEW.json", "w").write("{}")
+    assert config.get_write_path_problem_str(f"{root_str}store01_rawzone/ibkr_spy_1min/", root_str) == ""
+    assert config.get_write_path_problem_str(f"{root_str}store01_rawzone/ibkr_spy_1min_staging/new/", root_str) == ""
+    assert "outside" in config.get_write_path_problem_str(outside_str, root_str)
+    assert "outside" in config.get_write_path_problem_str(f"{root_str}store02_workzone/", root_str)
+    assert "outside" in config.get_write_path_problem_str(f"{root_str}store01_rawzone/../store01_rawzone_x/", root_str)
+    assert "development view" in config.get_write_path_problem_str(f"{root_str}store01_rawzone/viewlike/inner/", root_str)
+    old_data_path_str = os.environ.get("SO_DATA_PATH")
+    try:
+        os.environ["SO_DATA_PATH"] = f"{root_str}store01_rawzone/ibkr_spy_1min"
+        assert "SO_DATA_PATH" in config.get_write_path_problem_str(f"{root_str}store01_rawzone/ibkr_spy_1min/", root_str)
+    finally:
+        os.environ.pop("SO_DATA_PATH") if old_data_path_str is None else os.environ.__setitem__("SO_DATA_PATH", old_data_path_str)
+    # THE SCRIPTS STOP (EXIT 1) ON A FOLDER OUTSIDE THE RAW ZONE, BEFORE ANY READ OR WRITE; INSIDE IT, A DRY RUN RUNS
+    for script_str, argument_str_list in [("merge_staging_into_raw.py", ["--raw", outside_str]), ("merge_staging_into_raw.py", ["--staging", outside_str]),
+                                          ("download_ibkr_ohlcv.py", ["--staging", outside_str, "--list"]), ("organize_ohlcv_data.py", ["--raw", outside_str]),
+                                          ("clean_ohlcv_data.py", ["--raw", outside_str]), ("rebuild_ohlcv_data.py", ["--target", outside_str]),
+                                          ("rebuild_ohlcv_data.py", ["--source", outside_str])]:
+        refused = run_script(script_str, argument_str_list, root_str)
+        assert refused.returncode == 1 and "outside" in refused.stdout, (script_str, refused.stdout + refused.stderr)
+    accepted = run_script("merge_staging_into_raw.py", ["--raw", f"{root_str}store01_rawzone/ibkr_spy_1min/"], root_str)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert os.listdir(outside_str) == []
+    passed("write folders: outside the raw zone / inside a view / inside SO_DATA_PATH refused; every writing SPY script exits 1 first")
+
+# TEST: THE PRINT CUT-OFF FAILS CLOSED
+def test_print_cutoff():
+    # A REAL DATE AT OR BEFORE THE DEFAULT IS USED AS IT IS (A TOML DATE WITHOUT QUOTES TOO)
+    assert config.get_print_dates_before_tup({}) == ("2025-01-01", "")
+    assert config.get_print_dates_before_tup({"print_dates_before": "2024-06-30"}) == ("2024-06-30", "")
+    assert config.get_print_dates_before_tup({"print_dates_before": pd.Timestamp("2024-06-30").date()}) == ("2024-06-30", "")
+    # A MALFORMED OR IMPOSSIBLE DATE SHOWS NO DATE AND IS A PROBLEM ("2025-1-1" WOULD SORT AFTER IN-WINDOW DATES AS TEXT)
+    for value in ["2025-1-1", "2025/01/01", "2025-02-30", "", "soon"]:
+        cut_str, problem_str = config.get_print_dates_before_tup({"print_dates_before": value})
+        assert cut_str == "1900-01-01" and "YYYY-MM-DD" in problem_str, value
+    # A LATER DATE NEEDS THE SECOND SETTING
+    assert config.get_print_dates_before_tup({"print_dates_before": "2026-01-01"})[0] == "1900-01-01"
+    assert config.get_print_dates_before_tup({"print_dates_before": "2025-06-01", "print_dates_before_later_ok": True}) == ("2025-06-01", "")
+    assert config.get_print_dates_before_tup({"print_dates_before": "2025-06-01", "print_dates_before_later_ok": "true"})[0] == "1900-01-01"
+    passed("print cut-off: malformed, impossible or later dates fail closed (no date shown, scripts stop); a later date needs a second setting")
+
 # TEST: RUN MANIFESTS, LOCKS, LOG HEADERS, ACCOUNT LIST, REDACTION
 def test_records():
     # A MERGE WITH --apply WRITES ONE FINISHED MANIFEST AND RELEASES ITS LOCK
@@ -473,5 +521,7 @@ if __name__ == "__main__":
     test_merge()
     test_scripts()
     test_target_root_check()
+    test_write_path_check()
+    test_print_cutoff()
     test_records()
     print("\nAll index pipeline tests passed ✅")

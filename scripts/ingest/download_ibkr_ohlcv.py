@@ -53,8 +53,8 @@ def main():
     args = get_args()
     # STOP UNLESS THE TARGET ROOT IS SET, EXISTS AND IS THE QUARANTINE (NOT A DEVELOPMENT VIEW); --skip-root-check IS FOR TESTS
     config.check_target_root_str(args.skip_root_check)
-    # DEFINE THE STAGING FOLDER (ENDING WITH "/")
-    staging_path_str = args.staging.replace("\\", "/").rstrip("/") + "/"
+    # DEFINE THE STAGING FOLDER (ENDING WITH "/"); IT MUST LIE INSIDE THE QUARANTINE'S RAW ZONE, NEVER IN A DEVELOPMENT VIEW
+    staging_path_str = config.check_write_path_str(args.staging, args.skip_root_check)
     # SELECT THE SESSIONS
     session_pdf = get_download_session_pdf(args.start, args.end, args.dates, args.redownload, config.RAW_OHLCV_PATH_STR, staging_path_str)
     # DISPLAY INFORMATION

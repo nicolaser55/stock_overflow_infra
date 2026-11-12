@@ -1,10 +1,12 @@
 import os
 import re
+import json
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 import pandas as pd
-# IMPORT THE INGEST CONFIGURATION
+# IMPORT THE INGEST CONFIGURATION AND THE RUN RECORD HELPERS
 from ingest import config
+from ingest.records import get_run_id_str, write_json_atomic
 
 """
 Raw OHLCV Files: naming, text-preserving reading and writing, roll-up rules and the merge engine
@@ -29,8 +31,12 @@ Rules of every function that changes files (organize, clean, rebuild, merge from
        leaves a half-written CSV.
     6. All or nothing per target. The source files are first MOVED into the backup folder (that is their delete: if the
        share refuses deletes, this fails before anything was written and the moved files are put back). Then the target
-       is written and verified (re-read: every input minute present, no duplicate). If the write or the verification
-       fails, the target and the sources are restored. The data is never left in two files, and never lost.
+       is written and verified (re-read: every input minute present, no duplicate). If anything fails or interrupts the
+       step (an error, Ctrl+C), the target and the sources are restored. The data is never left in two files, and never lost.
+    7. A journal survives a hard stop. Before the first move, a journal <root>/store01_rawzone/_ingest/pending/<id>.json lists
+       the target, its backup and every source; it is removed only when the step is verified or fully restored. If the
+       process is killed in between (closed window, reboot, power cut), the journal stays, every script refuses to run
+       (ingest.config.check_target_root_str), and scripts/ingest/restore_pending_merge.py puts the files back.
 """
 
 """
@@ -413,11 +419,96 @@ def get_backup_path_str(raw_path_str_in):
     # RETURN THE BACKUP FOLDER PATH
     return f"{backup_path_str}/"
 
+# FUNCTION: WRITE THE JOURNAL OF A MERGE STEP
+def write_merge_journal_str(target_file_path_str_in, source_file_path_str_list_in, backup_path_str_in, target_existed_bool_in, pending_path_str_in=None):
+    """
+    Args:
+        target_file_path_str_in (str): Target CSV
+        source_file_path_str_list_in (list[str]): Source CSVs that will be moved into the backup folder
+        backup_path_str_in (str): Backup folder of the step
+        target_existed_bool_in (bool): Whether the target existed (its byte copy is then in the backup folder)
+        pending_path_str_in (str | None): Journal folder (default: config.PENDING_PATH_STR)
+
+    Returns:
+        str: Journal path
+    """
+    # WRITE THE JOURNAL ATOMICALLY (PATHS ONLY, NO DATA)
+    journal_path_str = f"{pending_path_str_in or config.PENDING_PATH_STR}{get_run_id_str()}.json"
+    write_json_atomic({"target_path_str": target_file_path_str_in, "source_path_str_list": list(source_file_path_str_list_in),
+                       "backup_path_str": backup_path_str_in, "target_existed_bool": bool(target_existed_bool_in),
+                       "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}, journal_path_str)
+    # RETURN THE PATH
+    return journal_path_str
+
+# FUNCTION: PUT BACK THE FILES OF A MERGE STEP FROM ITS JOURNAL
+def restore_pending_journal_dict(journal_path_str_in, apply_bool_in, alert_in=True):
+    """
+    Returns the folder to its state before the step: every source moved back from the backup folder, the target restored from its
+    byte copy (or removed when it did not exist before). Nothing is done when a file is missing or present in both places; the
+    journal then stays (fail closed). The journal is removed only after a complete restore.
+
+    Args:
+        journal_path_str_in (str): Journal file
+        apply_bool_in (bool): False = dry run (report only)
+        alert_in (bool): Display the counts
+
+    Returns:
+        dict: status_str ("dry_run", "restored", "refused"), move_count_int, in_place_count_int, missing_count_int, conflict_count_int,
+              target_action_str ("restore", "remove", "none")
+    """
+    # READ THE JOURNAL
+    with open(journal_path_str_in, encoding="utf-8") as file:
+        journal_dict = json.load(file)
+    backup_path_str, target_path_str = journal_dict["backup_path_str"], journal_dict["target_path_str"]
+    # PLAN THE SOURCE MOVES
+    move_tup_list, in_place_int, missing_int, conflict_int = [], 0, 0, 0
+    for original_path_str in journal_dict["source_path_str_list"]:
+        backup_file_str = f"{backup_path_str}{os.path.basename(original_path_str)}"
+        original_bool, backup_bool = os.path.isfile(original_path_str), os.path.isfile(backup_file_str)
+        if backup_bool and not original_bool:
+            move_tup_list.append((backup_file_str, original_path_str))
+        elif original_bool and not backup_bool:
+            in_place_int += 1
+        elif original_bool and backup_bool:
+            conflict_int += 1
+        else:
+            missing_int += 1
+    # PLAN THE TARGET
+    target_backup_str = f"{backup_path_str}{os.path.basename(target_path_str)}"
+    if journal_dict["target_existed_bool"]:
+        target_action_str = "restore"
+        missing_int += 0 if os.path.isfile(target_backup_str) else 1
+    else:
+        target_action_str = "remove" if os.path.isfile(target_path_str) else "none"
+    result_dict = {"status_str": "dry_run", "move_count_int": len(move_tup_list), "in_place_count_int": in_place_int, "missing_count_int": missing_int,
+                   "conflict_count_int": conflict_int, "target_action_str": target_action_str}
+    # REFUSE WHEN THE STATE IS NOT THE ONE A MERGE STEP CAN LEAVE (A PERSON MUST LOOK)
+    if missing_int or conflict_int:
+        result_dict["status_str"] = "refused"
+    # APPLY: SOURCES BACK FIRST, THEN THE TARGET, THEN REMOVE THE JOURNAL
+    elif apply_bool_in:
+        for backup_file_str, original_path_str in move_tup_list:
+            shutil.move(backup_file_str, original_path_str)
+        if target_action_str == "restore":
+            shutil.copy2(target_backup_str, f"{target_path_str}.tmp")
+            os.replace(f"{target_path_str}.tmp", target_path_str)
+        elif target_action_str == "remove":
+            os.remove(target_path_str)
+        # A TEMPORARY FILE LEFT BY A WRITE THAT WAS CUT SHORT (NOT A .csv, SO NEVER READ AS DATA) GOES TOO
+        if os.path.isfile(f"{target_path_str}.tmp"):
+            os.remove(f"{target_path_str}.tmp")
+        os.remove(journal_path_str_in)
+        result_dict["status_str"] = "restored"
+    # DISPLAY THE COUNTS (NO FILE NAMES: THEY HOLD DATES)
+    print(f"\t{result_dict}") if alert_in else None
+    # RETURN THE RESULT
+    return result_dict
+
 # FUNCTION: MERGE SOURCE FILES INTO A TARGET FILE
-def merge_files_into_target_dict(target_file_path_str_in, source_file_path_str_list_in, apply_bool_in, backup_path_str_in, alert_in=True):
+def merge_files_into_target_dict(target_file_path_str_in, source_file_path_str_list_in, apply_bool_in, backup_path_str_in, alert_in=True, pending_path_str_in=None):
     """
     Merges source files into a target file (created if missing) and deletes the sources, following the rules of the
-    module docstring (text kept, existing rows win, backup, atomic write, verification, all or nothing).
+    module docstring (text kept, existing rows win, backup, atomic write, verification, all or nothing, journal).
 
     Args:
         target_file_path_str_in (str): Target CSV (may not exist yet)
@@ -425,9 +516,14 @@ def merge_files_into_target_dict(target_file_path_str_in, source_file_path_str_l
         apply_bool_in (bool): False = dry run (read and report only)
         backup_path_str_in (str): Backup folder for this run (created on first use)
         alert_in (bool): Display information
+        pending_path_str_in (str | None): Journal folder (default: config.PENDING_PATH_STR)
 
     Returns:
         dict: target, sources, status ("dry_run", "merged", "rolled_back", "failed"), message and the merge counts
+
+    Raises:
+        Any exception other than OSError / ValueError (e.g. KeyboardInterrupt), after the folder was restored; RuntimeError when the
+        restore itself could not complete (the journal then stays and every script refuses to run)
     """
     # REMOVE THE TARGET FROM THE SOURCES
     source_file_path_str_list = [path_str for path_str in source_file_path_str_list_in if path_str != target_file_path_str_in]
@@ -457,23 +553,25 @@ def merge_files_into_target_dict(target_file_path_str_in, source_file_path_str_l
     # BACK UP THE TARGET (BYTE FOR BYTE COPY)
     if target_exists_bool:
         shutil.copy2(target_file_path_str_in, f"{backup_path_str_in}{os.path.basename(target_file_path_str_in)}")
-    # LIST TO HOLD THE SOURCES ALREADY MOVED INTO THE BACKUP FOLDER
-    moved_path_str_list = []
+    # WRITE THE JOURNAL BEFORE THE FIRST MOVE (A HARD STOP FROM HERE ON LEAVES IT, AND EVERY SCRIPT THEN REFUSES TO RUN)
+    journal_path_str = write_merge_journal_str(target_file_path_str_in, source_file_path_str_list, backup_path_str_in, target_exists_bool, pending_path_str_in)
     # TRY TO MOVE THE SOURCES INTO THE BACKUP FOLDER (THIS IS THE DELETE; IT FAILS FIRST IF DELETES ARE NOT ALLOWED)
     try:
         # ITERATE OVER THE SOURCES
         for path_str in source_file_path_str_list:
             # MOVE THE SOURCE
             shutil.move(path_str, f"{backup_path_str_in}{os.path.basename(path_str)}")
-            moved_path_str_list.append(path_str)
-    # IF A MOVE FAILS (NOTHING HAS BEEN WRITTEN YET)
-    except OSError as move_error:
-        # MOVE BACK THE SOURCES ALREADY MOVED
-        move_back_files(backup_path_str_in, moved_path_str_list)
-        # RETURN A ROLLBACK
+    # IF A MOVE FAILS OR THE RUN IS INTERRUPTED (NOTHING HAS BEEN WRITTEN YET): PUT EVERYTHING BACK
+    except BaseException as move_error:
+        restore_after_error(journal_path_str, move_error)
+        # A REFUSED DELETE IS A NORMAL OUTCOME (ROLLED BACK); ANYTHING ELSE (E.G. CTRL+C) GOES ON UP
+        if not isinstance(move_error, OSError):
+            raise
         result_dict.update(status_str="rolled_back", message_str=f"could not remove {os.path.basename(path_str)} ({move_error}); nothing changed")
         print(f"\t❌ {result_dict['message_str']}") if alert_in else None
         return result_dict
+    # DEFINE THE MOVED SOURCES
+    moved_path_str_list = list(source_file_path_str_list)
     # TRY TO WRITE AND VERIFY THE TARGET
     try:
         # WRITE THE TARGET
@@ -485,33 +583,40 @@ def merge_files_into_target_dict(target_file_path_str_in, source_file_path_str_l
         if set(check_pdf[TS_KEY_COL_STR]) != expected_ts_set or check_pdf[TS_KEY_COL_STR].duplicated().any():
             # RAISE AN ERROR
             raise ValueError("verification of the written target failed")
-    # IF THE WRITE OR THE VERIFICATION FAILS
-    except (OSError, ValueError) as write_error:
-        # RESTORE THE TARGET (OR REMOVE THE NEW ONE) AND MOVE THE SOURCES BACK
-        if target_exists_bool:
-            shutil.copy2(f"{backup_path_str_in}{os.path.basename(target_file_path_str_in)}", target_file_path_str_in)
-        elif os.path.isfile(target_file_path_str_in):
-            os.remove(target_file_path_str_in)
-        move_back_files(backup_path_str_in, moved_path_str_list)
-        # RETURN A FAILURE
+    # IF THE WRITE OR THE VERIFICATION FAILS, OR THE RUN IS INTERRUPTED: RESTORE THE TARGET (OR REMOVE THE NEW ONE) AND MOVE THE SOURCES BACK
+    except BaseException as write_error:
+        restore_after_error(journal_path_str, write_error)
+        # A FAILED WRITE OR VERIFICATION IS A NORMAL OUTCOME (FAILED, RESTORED); ANYTHING ELSE (E.G. CTRL+C) GOES ON UP
+        if not isinstance(write_error, (OSError, ValueError)):
+            raise
         result_dict.update(status_str="failed", message_str=f"{write_error}; target and sources restored")
         print(f"\t❌ {result_dict['message_str']}") if alert_in else None
         return result_dict
+    # THE STEP IS VERIFIED: REMOVE ITS JOURNAL
+    os.remove(journal_path_str)
     # RETURN A SUCCESS
     result_dict.update(status_str="merged")
     print(f"\t✅ Written and verified; {len(moved_path_str_list)} source file(s) moved to the backup folder {backup_path_str_in}") if alert_in else None
     return result_dict
 
-# FUNCTION: MOVE FILES BACK FROM A BACKUP FOLDER
-def move_back_files(backup_path_str_in, original_file_path_str_list_in):
+# FUNCTION: RESTORE A MERGE STEP AFTER AN ERROR OR AN INTERRUPTION
+def restore_after_error(journal_path_str_in, error_in):
     """
-    Moves files back from the backup folder to their original paths.
-
     Args:
-        backup_path_str_in (str): Backup folder
-        original_file_path_str_list_in (list[str]): Original paths of the moved files
+        journal_path_str_in (str): Journal of the step
+        error_in (BaseException): The error that stopped the step
+
+    Raises:
+        RuntimeError: When the folder could not be restored completely (the journal stays: every script refuses to run until
+                      scripts/ingest/restore_pending_merge.py or a person has put the files back)
     """
-    # ITERATE OVER THE FILES
-    for path_str in original_file_path_str_list_in:
-        # MOVE THE FILE BACK
-        shutil.move(f"{backup_path_str_in}{os.path.basename(path_str)}", path_str)
+    # PUT THE FILES BACK FROM THE JOURNAL
+    try:
+        restore_dict = restore_pending_journal_dict(journal_path_str_in, True, alert_in=False)
+    except BaseException as restore_error:
+        raise RuntimeError(f"a merge step stopped ({type(error_in).__name__}) and its restore failed too ({type(restore_error).__name__}); "
+                           f"the journal {journal_path_str_in} stays") from error_in
+    # A RESTORE THAT WAS REFUSED LEAVES THE JOURNAL
+    if restore_dict["status_str"] != "restored":
+        raise RuntimeError(f"a merge step stopped ({type(error_in).__name__}) and could not be restored automatically ({restore_dict}); "
+                           f"the journal {journal_path_str_in} stays") from error_in

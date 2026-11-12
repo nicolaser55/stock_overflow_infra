@@ -84,7 +84,8 @@ def merge_staging_into_raw_pdf(apply_bool_in=False, include_partial_bool_in=Fals
                                raw_path_str_in=config.RAW_OHLCV_PATH_STR, merged_path_str_in=config.STAGING_MERGED_PATH_STR,
                                log_file_path_str_in=config.MERGE_LOG_FILE_PATH_STR, now_ny_ts_in=None, run_id_str_in="", alert_in=True):
     """
-    Checks every staging day file (session schedule, candlestick sanity, already in raw) and, with apply_bool_in, copies the
+    Checks every staging day file (session schedule, no bar outside the session, no minute twice, candlestick sanity, already in
+    raw) and, with apply_bool_in, copies the
     accepted ones into the raw folder as new day files, then moves them to the merged folder.
 
     Each added file is logged as soon as it is added, so a run that stops on an error still records every file it added before
@@ -141,6 +142,9 @@ def merge_staging_into_raw_pdf(apply_bool_in=False, include_partial_bool_in=Fals
             decision_str = "skip: date already in raw (raw data is never replaced)"
         elif check_dict["status_str"] == "no_session":
             decision_str = "skip: not a closed NYSE session"
+        elif check_dict["extra_count_int"] or check_dict["duplicate_count_int"]:
+            # BARS OUTSIDE THE SESSION (PRE / POST MARKET, ANOTHER DATE) OR A MINUTE TWICE: THE RESEARCH READS EVERY ROW OF EVERY RAW FILE
+            decision_str = f"skip: {check_dict['extra_count_int']} bar(s) outside the session, {check_dict['duplicate_count_int']} duplicate minute(s)"
         elif sanity_issue_count_int:
             decision_str = "skip: candlestick sanity issues"
         elif check_dict["status_str"] == "partial" and not include_partial_bool_in:

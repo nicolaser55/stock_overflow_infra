@@ -35,9 +35,9 @@ def main():
     args = parser.parse_args()
     # STOP UNLESS THE TARGET ROOT IS SET, EXISTS AND IS THE QUARANTINE (NOT A DEVELOPMENT VIEW); --skip-root-check IS FOR TESTS
     config.check_target_root_str(args.skip_root_check)
-    # DEFINE THE FOLDERS (ENDING WITH "/")
-    staging_path_str = args.staging.replace("\\", "/").rstrip("/") + "/"
-    raw_path_str = args.raw.replace("\\", "/").rstrip("/") + "/"
+    # DEFINE THE FOLDERS (ENDING WITH "/"); BOTH MUST LIE INSIDE THE QUARANTINE'S RAW ZONE, NEVER IN A DEVELOPMENT VIEW
+    staging_path_str = config.check_write_path_str(args.staging, args.skip_root_check)
+    raw_path_str = config.check_write_path_str(args.raw, args.skip_root_check)
     # RUN THE MERGE
     with ScriptRun("merge_staging_into_raw", vars(args), "spy_1min", record_bool_in=args.apply, break_lock_bool_in=args.break_lock) as run:
         result_pdf = merge_staging_into_raw_pdf(args.apply, args.include_partial, staging_path_str, raw_path_str,

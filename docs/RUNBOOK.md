@@ -51,6 +51,13 @@ changed since the raw file was downloaded, or a bad-tick correction was applied 
   If that run is gone (a crash, a closed window), re-run with `--break-lock`.
 - **"The target root ... is a development view" / "has no store01_rawzone".** `config/local.toml` points to the wrong folder,
   or the share is not reachable. Nothing was written.
+- **"An interrupted merge left ... journal(s)".** An organize, clean or daily index merge was stopped between moving its source
+  files into the backup folder and writing its target (closed window, reboot). Raw may lack those rows, so every script refuses to
+  run. Run `python scripts\ingest\restore_pending_merge.py` (dry run: counts), then with `--apply`, then the interrupted script
+  again (dry run first). A journal it refuses (files missing or in both places) needs a look by hand: it lists paths only.
+- **"The folder ... is outside ...store01_rawzone/".** A `--raw`, `--staging`, `--source` or `--target` folder is not inside the
+  quarantine's raw zone (or is inside a development view). Nothing was read or written.
+- **"print_dates_before in config/local.toml ...".** Write it as `YYYY-MM-DD`, at or before the start of the holdout window.
 - **"The log ... has other columns".** An old log file sits where the new code wants to write. The code never appends to it;
   leave it as it is.
 - Run manifests: `store01_rawzone\_ingest\runs\<run id>.json`, one per writing run. They record whether the run `finished` or

@@ -15,7 +15,10 @@ credentials. `tests/test_repo_guard.py` and CI check this on every push. See [`S
 
 ## Rules the code enforces
 
-- **It writes only to the quarantine**, never to the development view. Every script checks the target root first.
+- **It writes only to the quarantine**, never to the development view. Every script checks the target root first, and every folder
+  given on the command line (`--raw`, `--staging`, `--source`, `--target`) must lie inside the quarantine's `store01_rawzone/`.
+- **An interrupted roll-up is never silent.** A merge step keeps a journal until its target is verified. If the process dies in
+  between, every script refuses to run until `scripts\ingest\restore_pending_merge.py` has put the files back.
 - **Downloads go to staging.** A separate merge adds checked files to the raw folders. The merge is a dry run unless `--apply`
   is given, and it never replaces a date that is already in raw.
 - **Every writing run leaves a record**: a manifest in `store01_rawzone/_ingest/runs/`, plus the run id and a SHA-256 in every
@@ -55,6 +58,7 @@ has the full sequence, with the steps that follow in the research workspace.
 | Tidy the raw folder (dry run, then `--apply`) | `scripts\ingest\organize_ohlcv_data.py`, `clean_ohlcv_data.py` | – |
 | Status and issues (read only) | `scripts\ingest\find_ohlcv_data_issues.py` | `scripts\ingest\index_data_status.py` |
 | Compare a re-download with raw (read only) | `scripts\ingest\check_redownload_against_raw.py` | – |
+| Put back an interrupted roll-up (dry run, then `--apply`) | `scripts\ingest\restore_pending_merge.py` | the same script |
 
 **3-month T-bill rate (FRED DTB3):** store the API key once with `scripts\machine\store_fred_key.py`, then
 `scripts\ingest\download_fred_series.py` (dry run) and `--apply`. No IB Gateway needed.

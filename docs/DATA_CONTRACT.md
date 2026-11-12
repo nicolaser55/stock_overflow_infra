@@ -18,6 +18,10 @@ Every script refuses a target root that:
 - holds `VIEW.json` or `view_manifest.json`;
 - equals `SO_DATA_PATH`.
 
+Every folder given on the command line (`--raw`, `--staging`, `--source`, `--target`) must lie inside `<target root>/store01_rawzone/`,
+with no `VIEW.json` or `view_manifest.json` in it or above it, and not inside `SO_DATA_PATH`. Every script also refuses to run
+while a journal of an interrupted merge step is pending in `_ingest/pending/`, or while `print_dates_before` is not usable (below).
+
 ```
 <target root>/store01_rawzone/
 ├── ibkr_spy_1min/                       SPY 1-minute bars (research: so.paths.LOCAL_OHLCV_DATA_FILE_PATH_STR)
@@ -27,7 +31,7 @@ Every script refuses a target root that:
 ├── <raw folder>_backup_YYYYMMDD_HHMMSS/ copies made before any raw file is changed
 ├── fred_dtb3/dtb3.csv                    3-month T-bill rate, every first release and revision (version 2)
 ├── spy_dividends/spy_dividends.csv      SPY distributions from 2005, first release and revisions (version 2)
-└── _ingest/                             ingest records: runs/<run id>.json (manifests), locks/<name>.lock,
+└── _ingest/                             ingest records: runs/<run id>.json (manifests), locks/<name>.lock, pending/ (journals of merge steps in progress),
                                          downloads/<source>/<run id>/ (responses as downloaded),
                                          resolutions/ (Nicolas's decisions on source disagreements)
 ```
@@ -46,7 +50,7 @@ refresh never copies them into the development view.
 | `volume` | SPY: shares. Index: empty when IBKR sends its "unset" value (2**127 − 1). |
 | `created_ts` | Always empty (kept for compatibility with every existing file). |
 | `date` | `YYYY-MM-DD`, the New York session date. |
-| Sessions | SPY: NYSE regular hours, every minute from 09:30 to the last bar (15:59, or 12:59 on half days). A session with missing minutes is added only with `--include-partial`, and its gaps are in the download log. |
+| Sessions | SPY: NYSE regular hours, every minute from 09:30 to the last bar (15:59, or 12:59 on half days). A session with missing minutes is added only with `--include-partial`, and its gaps are in the download log. A staged file with a bar outside its session (another date, pre or post market) or a minute twice is never added. |
 | Revisions | **First stored print, add-only.** A date already in raw is never replaced. Daily index files merge with **existing rows winning**: a later IBKR correction is counted as a conflict in the merge log, never written. |
 | Bad ticks | Not judged here. The research's `scripts/fix_raw_bad_ticks.py` is the only rule; run it after a merge. Before a merge, this repository checks candlestick consistency only: high and low against the open and close, prices above zero, volume not negative, no missing value, no minute twice. |
 
@@ -77,7 +81,9 @@ refresh never copies them into the development view.
   A source that changes an already-published vintage stops the run; nothing is written.
 - **Responses are kept as downloaded** under `_ingest/downloads/<source>/<run id>/`, with their SHA-256 in the run manifest.
 - **Output is counts only.** A printed line or a manifest names a date only if it is before `print_dates_before` (machine
-  setting, at or before the start of the holdout window), and never a value.
+  setting, at or before the start of the holdout window), and never a value. The setting must be a real date written
+  `YYYY-MM-DD`, not later than 2025-01-01 unless `print_dates_before_later_ok = true` is also set; otherwise no date is shown and
+  every script stops.
 
 ## `fred_dtb3/dtb3.csv`: 3-month Treasury bill, secondary market, discount basis (FRED DTB3, H.15)
 

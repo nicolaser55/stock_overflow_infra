@@ -31,9 +31,11 @@ def main():
     args = parser.parse_args()
     # STOP UNLESS THE TARGET ROOT IS SET, EXISTS AND IS THE QUARANTINE (NOT A DEVELOPMENT VIEW); --skip-root-check IS FOR TESTS
     config.check_target_root_str(args.skip_root_check)
+    # THE FOLDER MUST LIE INSIDE THE QUARANTINE'S RAW ZONE, NEVER IN A DEVELOPMENT VIEW
+    raw_path_str = config.check_write_path_str(args.raw, args.skip_root_check)
     # CLEAN THE FOLDER
     with ScriptRun("clean_ohlcv_data", vars(args), "spy_1min", record_bool_in=args.apply, break_lock_bool_in=args.break_lock) as run:
-        result_pdf = clean_raw_orphans_pdf(args.apply, args.raw.replace("\\", "/").rstrip("/") + "/")
+        result_pdf = clean_raw_orphans_pdf(args.apply, raw_path_str)
         run.summary_dict["target_count_int"] = len(result_pdf)
     # DISPLAY THE RESULT
     print(result_pdf.to_string(index=False)) if not result_pdf.empty else None

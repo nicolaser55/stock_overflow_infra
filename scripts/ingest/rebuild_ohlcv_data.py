@@ -33,9 +33,12 @@ def main():
     args = parser.parse_args()
     # STOP UNLESS THE TARGET ROOT IS SET, EXISTS AND IS THE QUARANTINE (NOT A DEVELOPMENT VIEW); --skip-root-check IS FOR TESTS
     config.check_target_root_str(args.skip_root_check)
+    # BOTH FOLDERS MUST LIE INSIDE THE QUARANTINE'S RAW ZONE, NEVER IN A DEVELOPMENT VIEW (THE SOURCE IS CHANGED WHEN IT IS ALSO THE TARGET)
+    source_path_str = config.check_write_path_str(args.source, args.skip_root_check)
+    target_path_str = config.check_write_path_str(args.target, args.skip_root_check)
     # REBUILD THE FOLDER
     with ScriptRun("rebuild_ohlcv_data", vars(args), "spy_1min", record_bool_in=args.apply, break_lock_bool_in=args.break_lock):
-        rebuild_raw_pdf(args.source.replace("\\", "/").rstrip("/") + "/", args.target.replace("\\", "/").rstrip("/") + "/", args.apply, args.delete_stale)
+        rebuild_raw_pdf(source_path_str, target_path_str, args.apply, args.delete_stale)
 
 # IF THE FILE IS RUN DIRECTLY
 if __name__ == "__main__":

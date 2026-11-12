@@ -1,4 +1,7 @@
 import os
+import re
+import glob
+import datetime
 import tomllib
 
 """
@@ -94,9 +97,46 @@ MERGE_LOG_FILE_PATH_STR = f"{STAGING_OHLCV_PATH_STR}merge_log_v2.csv"
 INGEST_RECORD_PATH_STR = f"{RAWZONE_PATH_STR}_ingest/"
 RUN_MANIFEST_PATH_STR = f"{INGEST_RECORD_PATH_STR}runs/"
 LOCK_PATH_STR = f"{INGEST_RECORD_PATH_STR}locks/"
+# DEFINE THE FOLDER OF THE JOURNALS OF MERGES IN PROGRESS (ingest.raw_files): A JOURNAL LEFT BEHIND MEANS A MERGE WAS INTERRUPTED,
+# AND EVERY SCRIPT REFUSES TO RUN UNTIL scripts/ingest/restore_pending_merge.py HAS PUT THE FILES BACK
+PENDING_PATH_STR = f"{INGEST_RECORD_PATH_STR}pending/"
+
+# DEFINE THE DEFAULT PRINT CUT-OFF AND THE CUT-OFF USED WHEN THE SETTING IS NOT USABLE (NO DATE IS EVER SHOWN THEN)
+PRINT_DATES_BEFORE_DEFAULT_STR = "2025-01-01"
+PRINT_DATES_BEFORE_REFUSED_STR = "1900-01-01"
+
+# FUNCTION: READ THE PRINT CUT-OFF (FAIL CLOSED)
+def get_print_dates_before_tup(setting_dict_in):
+    """
+    The cut-off must be a real date written YYYY-MM-DD (it is compared as text, so any other form could let later dates through),
+    and not later than PRINT_DATES_BEFORE_DEFAULT_STR unless print_dates_before_later_ok = true is also set.
+
+    Args:
+        setting_dict_in (dict): Local settings
+
+    Returns:
+        tuple: (cut-off "YYYY-MM-DD", problem text: "" when usable; when not usable the cut-off is PRINT_DATES_BEFORE_REFUSED_STR)
+    """
+    # READ THE VALUE (A TOML DATE WITHOUT QUOTES ARRIVES AS A date OBJECT)
+    text_str = str(setting_dict_in.get("print_dates_before", PRINT_DATES_BEFORE_DEFAULT_STR)).strip()
+    # IT MUST BE A REAL YYYY-MM-DD DATE
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text_str):
+            raise ValueError
+        datetime.date.fromisoformat(text_str)
+    except ValueError:
+        return PRINT_DATES_BEFORE_REFUSED_STR, "print_dates_before in config/local.toml is not a date written YYYY-MM-DD."
+    # A LATER CUT-OFF NEEDS AN EXPLICIT SECOND SETTING
+    if text_str > PRINT_DATES_BEFORE_DEFAULT_STR and setting_dict_in.get("print_dates_before_later_ok") is not True:
+        return PRINT_DATES_BEFORE_REFUSED_STR, (f"print_dates_before in config/local.toml is later than {PRINT_DATES_BEFORE_DEFAULT_STR}. "
+                                                "Set print_dates_before_later_ok = true as well, and only if it is still before the holdout window.")
+    # RETURN THE USABLE CUT-OFF
+    return text_str, ""
+
 # DEFINE THE FIRST DATE THAT A PRINTED LINE OR A MANIFEST MAY NOT NAME (NON-BAR SOURCES PRINT COUNTS, AND DATES ONLY BEFORE IT).
-# SET print_dates_before IN config/local.toml TO THE START OF THE ACTIVE HOLDOUT WINDOW OR EARLIER.
-PRINT_DATES_BEFORE_STR = str(LOCAL_SETTING_DICT.get("print_dates_before", "2025-01-01"))
+# SET print_dates_before IN config/local.toml TO THE START OF THE ACTIVE HOLDOUT WINDOW OR EARLIER. AN UNUSABLE VALUE SHOWS NO DATE
+# AND STOPS EVERY SCRIPT AT check_target_root_str().
+PRINT_DATES_BEFORE_STR, PRINT_DATES_BEFORE_PROBLEM_STR = get_print_dates_before_tup(LOCAL_SETTING_DICT)
 
 # DEFINE THE FILES THAT MARK A DEVELOPMENT VIEW (WRITTEN BY THE RESEARCH'S refresh_development_view.py IN THE SO_DATA_PATH ROOT)
 VIEW_MARKER_FILE_NAME_LIST = ["VIEW.json", "view_manifest.json"]
@@ -132,29 +172,118 @@ def get_target_root_problem_str(root_path_str_in=None):
     # THE ROOT IS USABLE
     return ""
 
-# FUNCTION: STOP A SCRIPT WHEN THE TARGET ROOT IS NOT USABLE
-def check_target_root_str(skip_bool_in=False):
+# FUNCTION: LIST THE JOURNALS OF INTERRUPTED MERGES
+def get_pending_journal_list(pending_path_str_in=None):
+    """
+    Args:
+        pending_path_str_in (str | None): Journal folder (default: PENDING_PATH_STR)
+
+    Returns:
+        list[str]: Journal files, oldest first (empty when none)
+    """
+    # LIST THE JSON FILES OF THE FOLDER
+    return sorted(glob.glob(f"{pending_path_str_in or PENDING_PATH_STR}*.json"))
+
+# FUNCTION: STOP A SCRIPT WHEN THE TARGET ROOT OR THE SETTINGS ARE NOT USABLE
+def check_target_root_str(skip_bool_in=False, allow_pending_bool_in=False):
     """
     Args:
         skip_bool_in (bool): Skip the check (tests on temporary folders only)
+        allow_pending_bool_in (bool): Do not stop on journals of interrupted merges (only the script that restores them)
 
     Returns:
         str: The target root
 
     Raises:
-        SystemExit: (code 1) when the root is not usable
+        SystemExit: (code 1) when the root is not usable, the print cut-off is not usable, or an interrupted merge is pending
     """
     # IF THE CHECK IS SKIPPED
     if skip_bool_in:
         return TARGET_ROOT_PATH_STR
-    # CHECK THE ROOT
-    problem_str = get_target_root_problem_str()
+    # CHECK THE ROOT, THEN THE PRINT CUT-OFF
+    problem_str = get_target_root_problem_str() or PRINT_DATES_BEFORE_PROBLEM_STR
+    # A MERGE INTERRUPTED BETWEEN MOVING ITS SOURCES AND WRITING ITS TARGET MUST BE RESTORED FIRST (RAW MAY LACK THOSE DAYS)
+    if not problem_str and not allow_pending_bool_in and get_pending_journal_list():
+        problem_str = (f"An interrupted merge left {len(get_pending_journal_list())} journal(s) in {PENDING_PATH_STR}: the raw folder may lack the rows "
+                       "it was moving. Run scripts/ingest/restore_pending_merge.py (dry run, then --apply) before anything else.")
     # STOP WITH THE MESSAGE
     if problem_str:
         print(f"❌ {problem_str}")
         raise SystemExit(1)
     # RETURN THE ROOT
     return TARGET_ROOT_PATH_STR
+
+# FUNCTION: CHECK A FOLDER THAT A SCRIPT WILL WRITE TO (OR CHANGE IN PLACE)
+def get_write_path_problem_str(path_str_in, root_path_str_in=None):
+    """
+    A folder given on the command line (--raw, --staging, --source, --target) must lie inside <target root>/store01_rawzone/, must
+    not be inside a development view (no VIEW.json or view_manifest.json in it or in any folder above it) and must not be inside
+    SO_DATA_PATH.
+
+    Args:
+        path_str_in (str): Folder
+        root_path_str_in (str | None): Target root (default: the configured one)
+
+    Returns:
+        str: "" when the folder may be written, otherwise the reason (this never raises)
+    """
+    # DEFINE THE ROOT
+    root_str = TARGET_ROOT_PATH_STR if root_path_str_in is None else get_folder_str(root_path_str_in)
+    if root_str == UNSET_ROOT_PATH_STR:
+        return "No target root is set, so no folder may be written."
+    # NORMALIZE BOTH PATHS (ABSOLUTE, CASE-FOLDED ON WINDOWS)
+    rawzone_str = os.path.normcase(os.path.abspath(root_str + "store01_rawzone"))
+    path_str = os.path.normcase(os.path.abspath(path_str_in))
+    # THE FOLDER MUST BE INSIDE THE RAW ZONE OF THE TARGET ROOT (DIFFERENT DRIVES: OUTSIDE)
+    try:
+        inside_bool = os.path.commonpath([rawzone_str, path_str]) == rawzone_str
+    except ValueError:
+        inside_bool = False
+    if not inside_bool:
+        return f"The folder {path_str_in} is outside {root_str}store01_rawzone/. The ingest writes only inside the quarantine's raw zone."
+    # NO DEVELOPMENT VIEW MARKER IN THE FOLDER OR ANY FOLDER ABOVE IT
+    folder_str = path_str
+    while True:
+        for marker_str in VIEW_MARKER_FILE_NAME_LIST:
+            if os.path.exists(os.path.join(folder_str, marker_str)):
+                return f"The folder {path_str_in} is inside a development view ({marker_str} in {folder_str}). The ingest writes only to the quarantine."
+        parent_str = os.path.dirname(folder_str)
+        if parent_str == folder_str:
+            break
+        folder_str = parent_str
+    # NOT INSIDE THE RESEARCH DATA ROOT OF THIS PROCESS
+    research_root_str = os.environ.get("SO_DATA_PATH", "").strip()
+    if research_root_str:
+        research_path_str = os.path.normcase(os.path.abspath(research_root_str))
+        try:
+            under_bool = os.path.commonpath([research_path_str, path_str]) == research_path_str
+        except ValueError:
+            under_bool = False
+        if under_bool:
+            return f"The folder {path_str_in} is inside SO_DATA_PATH (the development view). The ingest writes only to the quarantine."
+    # THE FOLDER MAY BE WRITTEN
+    return ""
+
+# FUNCTION: STOP A SCRIPT WHEN A FOLDER IT WILL WRITE IS NOT USABLE
+def check_write_path_str(path_str_in, skip_bool_in=False):
+    """
+    Args:
+        path_str_in (str): Folder from the command line
+        skip_bool_in (bool): Skip the check (tests on temporary folders only, with --skip-root-check)
+
+    Returns:
+        str: The folder with forward slashes and one trailing "/"
+
+    Raises:
+        SystemExit: (code 1) when the folder may not be written
+    """
+    # IF THE CHECK IS NOT SKIPPED, STOP ON A PROBLEM
+    problem_str = "" if skip_bool_in else get_write_path_problem_str(path_str_in)
+    if problem_str:
+        print(f"❌ {problem_str}")
+        raise SystemExit(1)
+    # RETURN THE NORMALIZED FOLDER
+    return get_folder_str(path_str_in)
 
 """
 File Conventions (identical to the existing raw files)

@@ -13,8 +13,8 @@ What is verified:
        what is saved and what is not, the file format, the download log, the in-flight limit and the submission interval,
        the pacing pause, skipping of sessions already present.
     4. Raw files: text kept exactly, existing rows win, conflicts counted, all-or-nothing merge (move failure, write
-       failure), organize / orphan rules.
-    5. Maintenance: staging -> raw merge (add-only, dry run, partial, non-session, sanity), clean, organize, rebuild
+       failure, Ctrl+C, a hard stop that leaves a journal: scripts refuse to run until the restore), organize / orphan rules.
+    5. Maintenance: staging -> raw merge (add-only, dry run, partial, non-session, bars outside the session, sanity), clean, organize, rebuild
        (separate folder and in place), the issue report.
     6. Compatibility: a copy of the research workspace's reader (tests/contract_reader.py) reads the organized folder
        with every minute exactly once.
@@ -311,7 +311,57 @@ def test_merge_rollback():
     finally:
         raw_files.write_text_pdf_atomic = original_write
     assert {f: open(f"{path_str}{f}", "rb").read() for f in os.listdir(path_str)} == before_dict
-    passed("all-or-nothing merge: refused delete, failed write, failed write of a new target -> folder unchanged")
+    assert config.get_pending_journal_list() == []
+    # CASE 4: CTRL+C DURING THE WRITE -> FOLDER RESTORED, NO JOURNAL LEFT, THE INTERRUPTION GOES ON UP
+    def interrupted_write(pdf_in, path_in):
+        raise KeyboardInterrupt
+    raw_files.write_text_pdf_atomic = interrupted_write
+    try:
+        merge_files_into_target_dict(f"{path_str}ohlcv_data_202512.csv", [f"{path_str}ohlcv_data_20251202.csv", f"{path_str}ohlcv_data_20251203.csv"],
+                                     True, f"{path_str[:-1]}_backup4/", False)
+        raise AssertionError("the interruption was swallowed")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        raw_files.write_text_pdf_atomic = original_write
+    assert {f: open(f"{path_str}{f}", "rb").read() for f in os.listdir(path_str)} == before_dict and config.get_pending_journal_list() == []
+    # CASE 5: A HARD STOP (THE PROCESS DIES BEFORE IT CAN RESTORE) -> SOURCES IN THE BACKUP, JOURNAL LEFT, SCRIPTS REFUSE TO RUN
+    class HardStop(BaseException):
+        pass
+    def dying_write(pdf_in, path_in):
+        raise HardStop
+    def no_restore(journal_path_str_in, error_in):
+        raise HardStop
+    original_restore = raw_files.restore_after_error
+    raw_files.write_text_pdf_atomic, raw_files.restore_after_error = dying_write, no_restore
+    try:
+        merge_files_into_target_dict(f"{path_str}ohlcv_data_202512.csv", [f"{path_str}ohlcv_data_20251202.csv", f"{path_str}ohlcv_data_20251203.csv"],
+                                     True, f"{path_str[:-1]}_backup5/", False)
+        raise AssertionError("the hard stop was swallowed")
+    except HardStop:
+        pass
+    finally:
+        raw_files.write_text_pdf_atomic, raw_files.restore_after_error = original_write, original_restore
+    journal_list = config.get_pending_journal_list()
+    assert len(journal_list) == 1 and sorted(os.listdir(path_str)) == ["ohlcv_data_202512.csv"]
+    try:
+        config.check_target_root_str()
+        raise AssertionError("a script would run with a pending journal")
+    except SystemExit as error:
+        assert error.code == 1
+    assert config.check_target_root_str(allow_pending_bool_in=True) == config.TARGET_ROOT_PATH_STR
+    # THE RESTORE: DRY RUN CHANGES NOTHING, APPLY PUTS THE FOLDER BACK AND REMOVES THE JOURNAL
+    dry_dict = raw_files.restore_pending_journal_dict(journal_list[0], False, alert_in=False)
+    assert dry_dict["status_str"] == "dry_run" and dry_dict["move_count_int"] == 2 and dry_dict["target_action_str"] == "restore"
+    assert sorted(os.listdir(path_str)) == ["ohlcv_data_202512.csv"]
+    assert raw_files.restore_pending_journal_dict(journal_list[0], True, alert_in=False)["status_str"] == "restored"
+    assert {f: open(f"{path_str}{f}", "rb").read() for f in os.listdir(path_str)} == before_dict and config.get_pending_journal_list() == []
+    # CASE 6: A JOURNAL WHOSE FILES ARE MISSING IS REFUSED AND KEPT (FAIL CLOSED)
+    journal_str = raw_files.write_merge_journal_str(f"{path_str}ohlcv_data_2026.csv", [f"{path_str}ohlcv_data_20991231.csv"], f"{path_str[:-1]}_backup6/", False)
+    refused_dict = raw_files.restore_pending_journal_dict(journal_str, True, alert_in=False)
+    assert refused_dict["status_str"] == "refused" and refused_dict["missing_count_int"] == 1 and os.path.isfile(journal_str)
+    os.remove(journal_str)
+    passed("all-or-nothing merge: refused delete, failed write, new target, Ctrl+C -> folder unchanged; hard stop -> journal, scripts refuse, restore")
 
 # FUNCTION: TEST THE ROLL-UP RULES
 def test_rollup_rules():
@@ -352,6 +402,10 @@ def get_raw_and_staging_tup(name_str_in):
     broken_pdf = get_raw_text_pdf("2025-12-11", "2025-12-11")
     broken_pdf.loc[10, "high"] = "50.00"
     broken_pdf.to_csv(f"{staging_path_str}ohlcv_data_20251211.csv", index=False)
+    # STAGING: A COMPLETE DAY WITH ONE BAR AFTER THE CLOSE (A FILE THE CURRENT DOWNLOADER NEVER WRITES, E.G. LEFT BY AN OLDER TOOL)
+    extra_pdf = get_raw_text_pdf("2025-12-15", "2025-12-15")
+    extra_pdf.loc[len(extra_pdf)] = ["2025-12-15 16:00:00-05:00", "100.00", "100.05", "99.95", "100.01", "1000", "", "2025-12-15"]
+    extra_pdf.to_csv(f"{staging_path_str}ohlcv_data_20251215.csv", index=False)
     # RETURN THE FOLDERS
     return raw_path_str, staging_path_str
 
@@ -368,6 +422,7 @@ def test_merge_staging():
     assert decision_dict["2025-12-08"] == "add" and decision_dict["2025-12-09"] == "add"
     assert decision_dict["2025-12-03"].startswith("skip: date already in raw") and decision_dict["2025-12-10"].startswith("skip: partial")
     assert decision_dict["2025-12-13"].startswith("skip: not a closed") and decision_dict["2025-12-11"].startswith("skip: candlestick")
+    assert decision_dict["2025-12-15"] == "skip: 1 bar(s) outside the session, 0 duplicate minute(s)"
     assert {f: open(f"{raw_path_str}{f}", "rb").read() for f in os.listdir(raw_path_str)} == raw_before_dict
     # APPLY WITH PARTIAL: ADD-ONLY (EXISTING FILES BYTE FOR BYTE UNCHANGED), FILES MOVED TO merged/, LOG WRITTEN
     result_pdf = merge_staging_into_raw_pdf(True, True, **merge_kwargs)
@@ -378,7 +433,7 @@ def test_merge_staging():
     assert len(pd.read_csv(f"{staging_path_str}merge_log_v2.csv")) == 3
     # A SECOND APPLY ADDS NOTHING
     assert not (merge_staging_into_raw_pdf(True, True, **merge_kwargs)["decision_str"] == "added").any()
-    passed("staging -> raw: add-only, existing date / partial / non-session / broken candle skipped, dry run, merged/ and log")
+    passed("staging -> raw: add-only, existing date / partial / non-session / bar outside the session / broken candle skipped, dry run, merged/ and log")
 
 # FUNCTION: TEST CLEAN, ORGANIZE, ISSUES AND THE REPO READER
 def test_clean_organize_issues():
