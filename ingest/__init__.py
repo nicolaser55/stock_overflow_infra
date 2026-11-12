@@ -28,3 +28,11 @@ for _stream in (_sys.stdout, _sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
+
+# MASK EVERY PRINTED DATE ON OR AFTER print_dates_before AND EVERY ACCOUNT ID (BAR TOOLS INCLUDED; OUTPUT IS OFTEN PASTED INTO CHATS).
+# FILES ARE NOT AFFECTED: LOGS AND MANIFESTS IN THE QUARANTINE KEEP THE FULL DETAIL.
+from ingest import config as _config
+if not isinstance(_sys.stdout, _config.MaskedStream):
+    _sys.stdout = _config.MaskedStream(_sys.stdout)
+if not isinstance(_sys.stderr, _config.MaskedStream):
+    _sys.stderr = _config.MaskedStream(_sys.stderr)

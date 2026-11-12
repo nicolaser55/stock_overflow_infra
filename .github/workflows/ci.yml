@@ -23,12 +23,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install (ibapi 9.81.1.post1 from PyPI; the machines use 10.45.1 from the TWS API source)
+      - name: Install (ibapi 9.81.1.post1 from PyPI as a stand-in; the desktop uses 10.50.1+ from the TWS API source)
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements/ci_requirements.txt
           python -m pip install -e .
-      - name: Tests
+      # LOGIC TESTS ONLY: THE SIMULATED SERVER SENDS EVERY ibapi LAYOUT, BUT CI NEVER RUNS THE REAL ibapi. THE REAL VERSION IS ENFORCED ON
+      # THE MACHINE: THE CLIENT REFUSES TO CONNECT BELOW 10.50.1, AND tests/test_installed_ibapi.py CHECKS THE INSTALLED PACKAGE.
+      - name: Logic tests (stand-in ibapi 9.81)
         env:
           PYTHONIOENCODING: utf-8
         run: python tests/run_all_tests.py

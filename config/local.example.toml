@@ -2,8 +2,7 @@
 # Never commit config/local.toml: it names folders and addresses of your machines.
 
 # The complete data tree (the quarantine), NEVER the development view (SO_DATA_PATH).
-#   On the desktop: the local quarantine folder, e.g. "D:/<folder>/quarantine/"
-#   On the laptop:  the network share that points to it, e.g. "//<desktop address>/<share name>/"
+#   The local quarantine folder on the desktop (the laptop ingest was retired on 2026-11-12), e.g. "D:/<folder>/quarantine/"
 # The environment variable SO_INGEST_TARGET_ROOT overrides this value (the tests use it).
 target_root = ""
 
@@ -12,6 +11,7 @@ ibkr_host = "127.0.0.1"
 ibkr_port = 4001
 ibkr_client_id = 1
 
-# Non-bar sources (FRED, dividends) print counts only, and name a date only if it is before this one.
-# Keep it at or before the start of the active holdout window.
+# Printed output (every tool) names a date only if it is before this one; later dates print as ####-##-##.
+# Keep it at or before the start of the active holdout window. It must be written YYYY-MM-DD; a date later than 2025-01-01 also
+# needs print_dates_before_later_ok = true (otherwise every script stops).
 print_dates_before = "2025-01-01"

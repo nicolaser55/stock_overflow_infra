@@ -35,6 +35,9 @@ class FakeIbkrApp(IbkrApp):
     IbkrApp with a simulated server.
     """
 
+    # THE SIMULATED SERVER RUNS WITH ANY ibapi (CI USES 9.81.1.post1 AS A STAND-IN); THE VERSION GATE IS TESTED ON ITS OWN
+    require_min_ibapi_bool = False
+
     # METHOD: INITIALIZE
     def __init__(self, scenario_dict_in=None, error_layout_str_in="10.45", decimal_volume_bool_in=True, delay_seconds_in=0.01):
         """
@@ -166,6 +169,9 @@ class FakeConnectionApp(IbkrApp):
     IbkrApp whose socket methods are replaced (the index tests add their own reqHistoricalData). Replaces the FakeProbeApp of the
     retired probe tests: same handshake, error layouts (10.45 or 9.81), answers from another thread, and synthetic bars.
     """
+
+    # THE SIMULATED SERVER RUNS WITH ANY ibapi (CI USES 9.81.1.post1 AS A STAND-IN); THE VERSION GATE IS TESTED ON ITS OWN
+    require_min_ibapi_bool = False
 
     # METHOD: INITIALIZE
     def __init__(self, error_layout_str_in="10.45"):

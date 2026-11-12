@@ -43,8 +43,8 @@ def redact_str(text_str_in):
     Returns:
         str: The text with every secret value replaced by "***"
     """
-    # REPLACE THE VALUES
-    return SECRET_RX.sub(lambda match: f"{match.group(1)}{match.group(2)}***", str(text_str_in))
+    # REPLACE THE VALUES, THEN ANY ACCOUNT ID
+    return config.ACCOUNT_RX.sub("***", SECRET_RX.sub(lambda match: f"{match.group(1)}{match.group(2)}***", str(text_str_in)))
 
 # FUNCTION: GET THE SHA-256 OF A FILE
 def get_file_sha256_str(file_path_str_in):
@@ -249,12 +249,15 @@ class ScriptRun:
         self.manifest_path_str = f"{record_path_str}runs/{self.run_id_str}.json"
         self.lock = SourceLock(lock_name_str_in, self.run_id_str, f"{record_path_str}locks/", break_lock_bool_in) if lock_name_str_in and record_bool_in else None
         self.summary_dict, self.manifest_dict = {}, {}
+        # A BODY THAT ENDS WITHOUT AN ERROR MAY SET ANOTHER FINAL STATUS: "stopped" (A BLOCKING CHECK, NOTHING WRITTEN) OR
+        # "finished_with_problems" (SOME SESSIONS OR FILES GAVE UP, FAILED OR ROLLED BACK)
+        self.status_override_str = None
 
     # METHOD: BUILD THE MANIFEST
     def get_manifest_dict(self, status_str_in, error_str_in=""):
         """
         Args:
-            status_str_in (str): "running", "finished" or "failed"
+            status_str_in (str): "running", "finished", "finished_with_problems", "stopped" or "failed"
             error_str_in (str): Error type and message (failed runs)
 
         Returns:
@@ -306,7 +309,7 @@ class ScriptRun:
         # RECORD THE OUTCOME, THEN RELEASE THE LOCK (EVEN WHEN THE MANIFEST CANNOT BE WRITTEN)
         if self.record_bool:
             try:
-                status_str = "finished" if exc_type is None else "failed"
+                status_str = (self.status_override_str or "finished") if exc_type is None else "failed"
                 error_str = "" if exc_type is None else f"{exc_type.__name__}: {exc_value}"
                 write_json_atomic(self.get_manifest_dict(status_str, error_str), self.manifest_path_str)
             finally:

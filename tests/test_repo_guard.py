@@ -35,8 +35,11 @@ TEXT_RULE_DICT = {
     "credential value": re.compile(r"(?i)\b(?:password|passwd|api[_-]?key|apikey|app_password|secret)\s*[=:]\s*['\"]?(?!\*\*\*|<|\{|\$|os\.|None|\"\"|''|getpass|keyring)[A-Za-z0-9_\-/+]{6,}"),
     "IBKR account id": re.compile(r"\b(?:DU|DF|U|F)\d{7,8}\b"),
 }
-# DEFINE THE FILES WHOSE TEXT IS NOT CHECKED (THIS FILE HOLDS THE PATTERNS; THE TEST DATA HOLDS FAKE VALUES ON PURPOSE)
-TEXT_EXEMPT_STR_LIST = ["tests/test_repo_guard.py", "tests/test_index_pipeline.py", "tests/test_ingest.py", ".gitleaks.toml"]
+# DEFINE THE FILES WHOSE TEXT IS NOT CHECKED (THIS FILE HOLDS THE PATTERNS AND SAMPLES; .gitleaks.toml HOLDS PATTERNS)
+TEXT_EXEMPT_STR_LIST = ["tests/test_repo_guard.py", ".gitleaks.toml"]
+# DEFINE THE FAKE VALUES THE TESTS USE ON PURPOSE: ONLY THESE EXACT VALUES ARE IGNORED, NEVER A WHOLE FILE (A REAL VALUE PASTED INTO A TEST
+# FILE IS FOUND LIKE ANYWHERE ELSE)
+FAKE_VALUE_RX = re.compile(r"(?:api_key=0123abcd|password: hunter2)(?![A-Za-z0-9])|\b(?:DU|DF|U|F)0000000\b")
 # DEFINE THE IMPORT OF THE RESEARCH PACKAGE
 SO_IMPORT_RX = re.compile(r"^\s*(?:from\s+so(?:\.|\s+import)|import\s+so(?:\.|\s|$))", re.M)
 
@@ -101,6 +104,7 @@ def get_finding_str_list():
         if path_str in TEXT_EXEMPT_STR_LIST:
             continue
         for line_int, line_str in enumerate(text_str.splitlines(), 1):
+            line_str = FAKE_VALUE_RX.sub("<fake>", line_str)
             for rule_str, rule_rx in TEXT_RULE_DICT.items():
                 if rule_rx.search(line_str):
                     finding_str_list.append(f"{path_str}:{line_int}: {rule_str}")
@@ -120,7 +124,11 @@ def test_rule_samples():
                                  ("user profile path", r"C:\Users\<you>\Desktop"), ("credential value", "api_key=***"),
                                  ("credential value", 'password = os.environ["X"]'), ("IBKR account id", "U123")]:
         assert not TEXT_RULE_DICT[rule_str].search(sample_str), (rule_str, sample_str)
-    print("✅ guard rules: samples found and not found as expected")
+    # ONLY THE EXACT FAKE VALUES ARE IGNORED
+    assert not TEXT_RULE_DICT["IBKR account id"].search(FAKE_VALUE_RX.sub("<fake>", "accounts DU0000000,U0000000"))
+    assert TEXT_RULE_DICT["IBKR account id"].search(FAKE_VALUE_RX.sub("<fake>", "accounts DU0000000,U1234567"))
+    assert TEXT_RULE_DICT["credential value"].search(FAKE_VALUE_RX.sub("<fake>", "api_key=0123abcdef99"))
+    print("✅ guard rules: samples found and not found as expected; only the exact fake values are ignored")
 
 # FUNCTION: CHECK THE REPOSITORY
 def test_repository():

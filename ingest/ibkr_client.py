@@ -1,3 +1,4 @@
+import re
 import time
 import logging
 import threading
@@ -115,6 +116,19 @@ def get_ibapi_version_str():
         except PackageNotFoundError:
             # RETURN UNKNOWN
             return "unknown"
+
+# FUNCTION: GET A VERSION AS A TUPLE OF NUMBERS ("10.50.2" -> (10, 50, 2); ANYTHING UNREADABLE -> (0,), WHICH NO GATE ACCEPTS)
+def get_version_tuple(version_str_in):
+    """
+    Args:
+        version_str_in (str): Version text
+
+    Returns:
+        tuple: Up to three numbers
+    """
+    # COLLECT THE NUMBERS
+    number_str_list = re.findall(r"\d+", str(version_str_in))[:3]
+    return tuple(int(number_str) for number_str in number_str_list) if number_str_list else (0,)
 
 """
 Bar Parsing
@@ -246,6 +260,9 @@ class IbkrApp(EWrapper, EClient):
     wait_request_dict() (or request_historical_bars_dict() for one blocking request).
     """
 
+    # REFUSE TO CONNECT WITH AN ibapi OLDER THAN config.MIN_IBAPI_VERSION_STR (THE SIMULATED SERVERS OF THE TESTS TURN THIS OFF)
+    require_min_ibapi_bool = True
+
     # METHOD: INITIALIZE THE APPLICATION
     def __init__(self, alert_in=True):
         """
@@ -290,6 +307,11 @@ class IbkrApp(EWrapper, EClient):
         Returns:
             bool: True when connected
         """
+        # REFUSE AN ibapi THAT IBKR NO LONGER SUPPORTS (FAIL CLOSED: AN UNREADABLE VERSION IS REFUSED TOO)
+        if self.require_min_ibapi_bool and get_version_tuple(get_ibapi_version_str()) < get_version_tuple(config.MIN_IBAPI_VERSION_STR):
+            print(f"❌ ibapi {get_ibapi_version_str()} is older than {config.MIN_IBAPI_VERSION_STR}, the oldest IBKR supports from 2026-12-15. "
+                  "Rebuild the venv with setup_venv.py from a newer TWS API.")
+            return False
         # IF THE APPLICATION IS ALREADY CONNECTED
         if self.isConnected() and self.connected_event.is_set():
             # DISPLAY INFORMATION
@@ -575,9 +597,9 @@ class IbkrApp(EWrapper, EClient):
             reqId (int): Request id (-1 for messages not tied to a request)
             *args: Version-dependent arguments (see get_error_dict)
         """
-        # NORMALIZE THE ARGUMENTS
+        # NORMALIZE THE ARGUMENTS; MASK ANY ACCOUNT-LIKE ID BEFORE THE TEXT IS STORED, LOGGED OR PRINTED
         error_dict = get_error_dict(args)
-        error_code_int, error_str = error_dict["error_code_int"], error_dict["error_str"]
+        error_code_int, error_str = error_dict["error_code_int"], config.ACCOUNT_RX.sub("***", error_dict["error_str"])
         # CLASSIFY THE MESSAGE
         status_str = get_error_status_str(error_code_int, error_str)
         # LOCK THE REQUEST DICTIONARY

@@ -285,6 +285,108 @@ def check_write_path_str(path_str_in, skip_bool_in=False):
     # RETURN THE NORMALIZED FOLDER
     return get_folder_str(path_str_in)
 
+# FUNCTION: GET THE LOCK THAT GUARDS A RAW OR STAGING FOLDER
+def get_lock_name_str(path_str_in):
+    """
+    Args:
+        path_str_in (str): Folder (SPY or index)
+
+    Returns:
+        str: "vix_family" for a folder under ibkr_vix_family[_staging]/, otherwise "spy_1min"
+    """
+    # THE INDEX FOLDERS HAVE THEIR OWN LOCK
+    return "vix_family" if "/ibkr_vix_family" in get_folder_str(path_str_in) else "spy_1min"
+
+"""
+Printed Output: no date on or after the print cut-off, no account id
+"""
+
+# DEFINE THE PATTERNS: AN IBKR ACCOUNT ID, AN ISO DATE, A COMPACT DATE (NOT A RUN ID "YYYYMMDDTHHMMSSZ"), A YEAR OR MONTH FILE NAME
+ACCOUNT_RX = re.compile(r"\b(?:DU|DF|U|F)\d{6,8}\b")
+ISO_DATE_RX = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")
+COMPACT_DATE_RX = re.compile(r"(?<!\d)((?:19|20)\d{2})(\d{2})(\d{2})(?![\dT])")
+PERIOD_FILE_RX = re.compile(r"(ohlcv_data_)(\d{4}(?:\d{2})?)(?=\.csv)")
+
+# FUNCTION: GET THE LAST DAY OF A PERIOD TOKEN ("" WHEN IT IS NOT A REAL DATE)
+def get_period_end_str(year_str_in, month_str_in=None, day_str_in=None):
+    """
+    Args:
+        year_str_in (str): "YYYY"
+        month_str_in (str | None): "MM" (None = the whole year)
+        day_str_in (str | None): "DD" (None = the whole month)
+
+    Returns:
+        str: "YYYY-MM-DD" of the period's last day, or "" when the token is not a real date
+    """
+    # BUILD THE LAST DAY OF THE PERIOD
+    try:
+        if month_str_in is None:
+            return datetime.date(int(year_str_in), 12, 31).isoformat()
+        if day_str_in is None:
+            next_month_date = datetime.date(int(year_str_in) + int(month_str_in) // 12, int(month_str_in) % 12 + 1, 1)
+            datetime.date(int(year_str_in), int(month_str_in), 1)
+            return (next_month_date - datetime.timedelta(days=1)).isoformat()
+        return datetime.date(int(year_str_in), int(month_str_in), int(day_str_in)).isoformat()
+    except ValueError:
+        return ""
+
+# FUNCTION: MASK EVERY DATE ON OR AFTER THE PRINT CUT-OFF, AND EVERY ACCOUNT ID, IN A TEXT
+def mask_output_str(text_str_in, cutoff_str_in=None):
+    """
+    Bar tools print session dates and file names; FRED and dividends print summaries. Whatever the tool, a date is shown only when
+    the whole period it names ends before the cut-off (a day, a month file ohlcv_data_YYYYMM.csv, a year file ohlcv_data_YYYY.csv).
+    A year alone ("2026") and a run id ("20261112T084916Z") are shown: they name no session. The full detail stays in the logs in the
+    quarantine.
+
+    Args:
+        text_str_in (str): Text to print
+        cutoff_str_in (str | None): Cut-off "YYYY-MM-DD" (default: PRINT_DATES_BEFORE_STR)
+
+    Returns:
+        str: The text with "####-##-##", "########" or "ohlcv_data_######.csv" in place of every later date, and "U*******" for an account id
+    """
+    cutoff_str = cutoff_str_in or PRINT_DATES_BEFORE_STR
+    # ACCOUNT IDS
+    text_str = ACCOUNT_RX.sub(lambda match: match.group(0)[:2 if match.group(0).startswith("D") else 1] + "*******", str(text_str_in))
+    # YEAR AND MONTH FILE NAMES
+    def mask_file(match):
+        token_str = match.group(2)
+        end_str = get_period_end_str(token_str[:4], token_str[4:6] or None)
+        return match.group(0) if end_str and end_str < cutoff_str else match.group(1) + "#" * len(token_str)
+    text_str = PERIOD_FILE_RX.sub(mask_file, text_str)
+    # ISO AND COMPACT DATES
+    def mask_iso(match):
+        end_str = get_period_end_str(*match.groups())
+        return match.group(0) if not end_str or end_str < cutoff_str else "####-##-##"
+    def mask_compact(match):
+        end_str = get_period_end_str(*match.groups())
+        return match.group(0) if not end_str or end_str < cutoff_str else "########"
+    return COMPACT_DATE_RX.sub(mask_compact, ISO_DATE_RX.sub(mask_iso, text_str))
+
+# CLASS: AN OUTPUT STREAM THAT MASKS WHAT IS WRITTEN TO IT (INSTALLED ON sys.stdout AND sys.stderr BY ingest/__init__.py)
+class MaskedStream:
+    """
+    Wraps a text stream: every write goes through mask_output_str(); every other attribute (flush, reconfigure, encoding, fileno, ...)
+    is the wrapped stream's.
+    """
+
+    # METHOD: INITIALIZE
+    def __init__(self, stream_in):
+        self._stream = stream_in
+
+    # METHOD: WRITE MASKED TEXT
+    def write(self, text_str_in):
+        return self._stream.write(mask_output_str(text_str_in))
+
+    # METHOD: WRITE MASKED LINES
+    def writelines(self, line_list_in):
+        for line_str in line_list_in:
+            self.write(line_str)
+
+    # METHOD: EVERYTHING ELSE IS THE WRAPPED STREAM'S
+    def __getattr__(self, name_str_in):
+        return getattr(self._stream, name_str_in)
+
 """
 File Conventions (identical to the existing raw files)
 """
@@ -297,6 +399,10 @@ OHLCV_COL_STR_LIST = ["timestamp", "open", "high", "low", "close", "volume", "cr
 TIMESTAMP_FORMAT_STR = "%Y-%m-%d %H:%M:%S%z"
 # DEFINE THE NEW YORK TIMEZONE NAME
 NY_TZ_STR = "America/New_York"
+
+# DEFINE THE OLDEST ibapi THE CLIENT CONNECTS WITH (IBKR STOPS SUPPORTING OLDER VERSIONS ON 2026-12-15; THE TESTS USE A SIMULATED SERVER
+# AND DO NOT CHECK IT; tests/test_installed_ibapi.py CHECKS THE MACHINE)
+MIN_IBAPI_VERSION_STR = "10.50.1"
 
 """
 IBKR Connection (IB Gateway live: 4001, IB Gateway paper: 4002, TWS live: 7496, TWS paper: 7497)
@@ -337,8 +443,9 @@ IBKR_END_DATETIME_TZ_STR = "US/Eastern"
 REQUEST_TIMEOUT_SECONDS = 60
 # DEFINE THE NUMBER OF ATTEMPTS PER SESSION (A PARTIAL OR FAILED SESSION IS REQUESTED AGAIN UP TO THIS COUNT)
 REQUEST_ATTEMPT_COUNT = 3
-# DEFINE THE DELAY AFTER THE SESSION CLOSE BEFORE A SESSION IS CONSIDERED DOWNLOADABLE (minutes)
-SESSION_CLOSE_BUFFER_MINUTES = 5
+# DEFINE WHEN A SESSION BECOMES DOWNLOADABLE: AT THIS NEW YORK TIME ON THE NEXT CALENDAR DAY (DECIDED 2026-11-12). raw KEEPS THE FIRST
+# STORED PRINT FOREVER, SO A SESSION IS NEVER TAKEN MINUTES AFTER ITS CLOSE, BEFORE IBKR HAS SETTLED ITS LAST BARS (SPY AND INDICES ALIKE)
+SESSION_DOWNLOADABLE_TIME_STR = "06:00:00"
 
 """
 Pacing (IBKR historical data limits)

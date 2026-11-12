@@ -20,10 +20,14 @@ holdout. The research's AI agents can read the web, so a public copy of recent m
   - IPv4 addresses (other than 127.0.0.1), network share paths, Windows user-profile paths;
   - private keys, `password=` / `api_key=` values, IBKR account ids;
   - an import of the research package.
-- CI's `secrets` job: gitleaks over the whole history (`.gitleaks.toml`).
+- CI's `secrets` job: gitleaks over the whole history (`.gitleaks.toml`). Only the exact fake values of the tests are allowed,
+  never a whole test file.
+- A `pre-push` hook (`scripts/machine/install_git_hooks.ps1`, once per clone) runs the repository guard, and gitleaks when it is
+  installed, before anything leaves the machine.
 - GitHub secret scanning with push protection, turned on in the repository settings.
 - The code itself:
-  - `ingest.ibkr_client` drops the account list and keeps ibapi's logging at WARNING;
+  - `ingest.ibkr_client` drops the account list, masks account ids in IBKR's messages and keeps ibapi's logging at WARNING;
+  - every printed line (stdout and stderr, once `ingest` is imported) masks dates on or after `print_dates_before` and account ids;
   - `ingest.records.redact_str` masks secret values before anything is printed or written into a manifest;
   - a test checks that the code calls no account, position or order request.
 

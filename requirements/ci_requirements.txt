@@ -1,3 +1,4 @@
-# CI only (GitHub Actions, Linux and Windows): the machine requirements plus ibapi from PyPI (9.81.1.post1; 10.45.1 is not on PyPI).
+# CI only (GitHub Actions, Linux and Windows): the machine requirements plus ibapi from PyPI as a stand-in (9.81.1.post1; the official
+# 10.x releases are not on PyPI; the desktop runs 10.50.1 or later from the TWS API source, checked by tests/test_installed_ibapi.py).
 -r infra_requirements.txt
 ibapi==9.81.1.post1

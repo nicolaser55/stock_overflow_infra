@@ -1,9 +1,8 @@
 # Python 3.12. Versions pinned to the research workspace (stock_overflow_workspace/requirements) for every package that exists there,
 # so the NYSE calendar and the pandas behaviour are the same on both sides.
 #
-# ibapi is NOT installed from this file. On the desktop and the laptop it is ibapi 10.45.1, installed from the TWS API source folder by
-# setup_venv.py --ibapi-source (equivalent to: pip install "C:\TWS API\source\pythonclient"); it requires protobuf==5.29.5, which pip
-# installs with it. CI installs ibapi==9.81.1.post1 from PyPI instead (requirements/ci_requirements.txt): the code supports both
+# ibapi is NOT installed from this file. On the desktop it is ibapi 10.50.1 or later, installed by setup_venv.py from the newest
+# C:\TWS API*\source\pythonclient folder (or --ibapi-source); it requires protobuf>=5.29.5, which pip installs with it. CI installs ibapi==9.81.1.post1 from PyPI instead (requirements/ci_requirements.txt): the code supports both
 # versions (ingest/ibkr_client.py), and the tests use a simulated server.
 pandas==2.3.3
 numpy==2.1.3

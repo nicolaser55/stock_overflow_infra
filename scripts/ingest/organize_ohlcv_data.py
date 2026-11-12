@@ -34,7 +34,7 @@ def main():
     # THE FOLDER MUST LIE INSIDE THE QUARANTINE'S RAW ZONE, NEVER IN A DEVELOPMENT VIEW
     raw_path_str = config.check_write_path_str(args.raw, args.skip_root_check)
     # ORGANIZE THE FOLDER
-    with ScriptRun("organize_ohlcv_data", vars(args), "spy_1min", record_bool_in=args.apply, break_lock_bool_in=args.break_lock) as run:
+    with ScriptRun("organize_ohlcv_data", vars(args), config.get_lock_name_str(raw_path_str), record_bool_in=args.apply, break_lock_bool_in=args.break_lock) as run:
         result_pdf = organize_raw_pdf(args.apply, raw_path_str)
         run.summary_dict["target_count_int"] = len(result_pdf)
     # DISPLAY THE RESULT

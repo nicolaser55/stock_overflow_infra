@@ -9,6 +9,7 @@ from ingest import config
 from ingest.records import get_file_sha256_str
 from ingest.sessions import get_session_pdf, get_ny_now_ts
 from ingest.raw_files import get_ohlcv_file_pdf
+from ingest.fred import write_union_verified
 
 """
 SPY Dividends (State Street primary, Yahoo Finance cross-check), published append-only with their availability time
@@ -242,6 +243,12 @@ def get_dividend_tuple(ssga_pdf_in, crosscheck_pdf_in, resolution_pdf_in, publis
     if close_dict_in is not None:
         close_series = ssga_pdf["ex_date"].map(previous_dict).map(close_dict_in)
         issue_dict["reported_no_previous_close"] = ssga_pdf.loc[close_series.isna(), "ex_date"].tolist()
+        # A MISSING CLOSE IS EXPLAINED ONLY WHEN ITS SESSION IS AFTER THE LAST CLOSE FOUND (RAW ENDS BEFORE IT); ANY OTHER (AN EMPTY OR
+        # WRONG RAW FOLDER, A GAP) WOULD SKIP THE 3% CHECK SILENTLY, SO IT STOPS THE RUN (--skip-close-check IS THE EXPLICIT WAY OUT)
+        last_close_str = max(close_dict_in) if close_dict_in else ""
+        previous_series = ssga_pdf["ex_date"].map(previous_dict)
+        issue_dict["blocking_no_previous_close_inside_raw"] = ssga_pdf.loc[close_series.isna() & (previous_series <= last_close_str), "ex_date"].tolist() \
+            if last_close_str else ssga_pdf.loc[close_series.isna(), "ex_date"].tolist()
         issue_dict["blocking_amount_over_3pct_of_close"] = ssga_pdf.loc[close_series.notna() & (amount_series / close_series >= MAX_YIELD_FLOAT), "ex_date"].tolist()
     # BUILD THE CANDIDATE ROWS
     ex_ts_series = pd.to_datetime(ssga_pdf["ex_date"] + " " + EX_DATE_OPEN_TIME_STR).dt.tz_localize(config.NY_TZ_STR)
@@ -335,17 +342,11 @@ def run_dividend_dict(ssga_file_path_str_in, apply_bool_in, run_id_str_in, cross
     summary_dict["download_file_list"] = [{"file_str": name_str, "sha256_str": get_file_sha256_str(f"{download_path_str}{name_str}")} for name_str in sorted(os.listdir(download_path_str))]
     if add_pdf.empty:
         return summary_dict
-    # BACK UP, THEN WRITE THE UNION ATOMICALLY (PUBLISHED ROWS UNCHANGED)
-    os.makedirs(folder_path_str, exist_ok=True)
-    if os.path.exists(file_path_str):
-        backup_path_str = f"{config.RAWZONE_PATH_STR}{DIVIDEND_FOLDER_NAME_STR}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}/"
-        os.makedirs(backup_path_str, exist_ok=True)
-        shutil.copy2(file_path_str, backup_path_str)
+    # WRITE THE UNION ATOMICALLY (PUBLISHED ROWS UNCHANGED, BACKUP FIRST) AND READ IT BACK
     union_pdf = pd.concat([published_pdf, add_pdf], ignore_index=True).sort_values(["ex_date", "available_ts"])[DIVIDEND_COLUMN_STR_LIST]
     if union_pdf.duplicated(DIVIDEND_ROW_KEY_STR_LIST).any():
-        raise DividendError("Two rows with the same ex-date, type and availability time; nothing written.")
-    temporary_path_str = f"{file_path_str}.tmp"
-    union_pdf.to_csv(temporary_path_str, index=False, lineterminator="\n")
-    os.replace(temporary_path_str, file_path_str)
+        raise DividendError("Two rows with the same ex-date, type and availability time; the published file was not changed.")
+    write_union_verified(union_pdf, file_path_str, f"{config.RAWZONE_PATH_STR}{DIVIDEND_FOLDER_NAME_STR}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}/",
+                         DIVIDEND_COLUMN_STR_LIST, DividendError)
     summary_dict["published_sha256_str"] = get_file_sha256_str(file_path_str)
     return summary_dict

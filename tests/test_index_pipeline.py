@@ -5,7 +5,7 @@ Run from the workspace root:   python tests/test_index_pipeline.py
 
 What is verified:
     1. Folders: every index / bar size has its own raw and staging folder, none inside the SPY raw folder (the research pipeline reads every CSV there).
-    2. Planning: the UTC end formats, one request per 1-minute session and per year of daily bars, the "finished session" rule (today only from 17:00),
+    2. Planning: the UTC end formats, one request per 1-minute session and per year of daily bars, the "settled session" rule (from 06:00 New York the next day),
        the default start (first date IBKR has), skipping present dates, --from-start, dates that are not sessions.
     3. The 1-minute download: a complete session, a session with a gap (retried, then saved and flagged partial), an empty session (retried, not saved),
        an error, a pacing violation, bars of another date (dropped and counted), the 2016-style 03:15 start with the 09:15-09:30 gap (not a gap),
@@ -187,8 +187,9 @@ def test_helpers():
     assert get_index_volume_str(2 ** 127 - 1) == "" and get_index_volume_str(0) == "0" and get_index_volume_str(-1) == "-1" and get_index_volume_str(12) == "12"
     session_pdf = get_session_pdf("2026-10-05", "2026-10-06")
     assert list(get_index_closed_session_pdf(session_pdf, pd.Timestamp("2026-10-06 16:30", tz=config.NY_TZ_STR))["date"].astype(str)) == ["2026-10-05"]
-    assert list(get_index_closed_session_pdf(session_pdf, pd.Timestamp("2026-10-06 17:00", tz=config.NY_TZ_STR))["date"].astype(str)) == ["2026-10-05", "2026-10-06"]
-    passed("helpers: UTC end (EDT and EST), unset volume, finished-session rule")
+    assert list(get_index_closed_session_pdf(session_pdf, pd.Timestamp("2026-10-06 23:00", tz=config.NY_TZ_STR))["date"].astype(str)) == ["2026-10-05"]
+    assert list(get_index_closed_session_pdf(session_pdf, pd.Timestamp("2026-10-07 06:00", tz=config.NY_TZ_STR))["date"].astype(str)) == ["2026-10-05", "2026-10-06"]
+    passed("helpers: UTC end (EDT and EST), unset volume, settled-session rule (06:00 New York the next day)")
 
 # TEST: PLANNING
 def test_planning():
@@ -208,8 +209,8 @@ def test_planning():
     assert [(task["label_str"], len(task["wanted_date_list"]), task["end_datetime_str"], task["duration_str"]) for task in task_list] == \
            [("2025", 3, "20260103-05:00:00", "2 Y"), ("2026", 2, "20260108-05:00:00", "2 Y")], [(t["label_str"], t["end_datetime_str"]) for t in task_list]
     task_list = get_index_task_list("VIX", "daily", date1_in="2026-10-01", raw_path_str_in=raw_str, staging_path_str_in=staging_str, now_ny_ts_in=NOW_TS, alert_in=False)
-    assert len(task_list) == 1 and task_list[0]["end_datetime_str"] == "" and len(task_list[0]["wanted_date_list"]) == 4
-    # A DAY THAT IS NOT A SESSION IS SKIPPED (2026-09-07 IS LABOR DAY), A SESSION OF TODAY BEFORE 17:00 IS NOT YET DOWNLOADABLE
+    assert len(task_list) == 1 and task_list[0]["end_datetime_str"] == "" and len(task_list[0]["wanted_date_list"]) == 3
+    # A DAY THAT IS NOT A SESSION IS SKIPPED (2026-09-07 IS LABOR DAY), A SESSION OF TODAY IS NOT YET DOWNLOADABLE
     assert [t["label_str"] for t in get_index_task_list("VIX", "1min", date_list_in=["2026-09-07", "2026-09-08"], raw_path_str_in=raw_str, staging_path_str_in=staging_str, now_ny_ts_in=NOW_TS, alert_in=False)] == ["2026-09-08"]
     assert get_index_task_list("VIX", "1min", date_list_in=["2026-10-06"], raw_path_str_in=raw_str, staging_path_str_in=staging_str, now_ny_ts_in=pd.Timestamp("2026-10-06 16:30", tz=config.NY_TZ_STR), alert_in=False) == []
     passed("planning: UTC ends, one request per session / year, start dates, closed rule")
@@ -430,6 +431,52 @@ def test_write_path_check():
     assert os.listdir(outside_str) == []
     passed("write folders: outside the raw zone / inside a view / inside SO_DATA_PATH refused; every writing SPY script exits 1 first")
 
+# TEST: PRINTED OUTPUT NEVER NAMES A DATE ON OR AFTER THE CUT-OFF, NOR AN ACCOUNT ID (EVERY TOOL, BAR TOOLS INCLUDED)
+def test_output_mask():
+    cut_str = "2025-01-01"
+    mask = lambda text_str: config.mask_output_str(text_str, cut_str)
+    # DATES: ISO, COMPACT (IBKR END STRINGS, DAY FILES), MONTH AND YEAR FILES; A PERIOD IS SHOWN ONLY WHEN IT ENDS BEFORE THE CUT-OFF
+    assert mask("2024-12-31 and 2025-01-01 09:30:00-05:00") == "2024-12-31 and ####-##-## 09:30:00-05:00"
+    assert mask("end 20241231 16:00:00 US/Eastern, end 20251202-21:00:00") == "end 20241231 16:00:00 US/Eastern, end ########-21:00:00"
+    assert mask("ohlcv_data_2024.csv ohlcv_data_2025.csv ohlcv_data_202412.csv ohlcv_data_202501.csv ohlcv_data_20250102.csv") == \
+           "ohlcv_data_2024.csv ohlcv_data_####.csv ohlcv_data_202412.csv ohlcv_data_######.csv ohlcv_data_########.csv"
+    # NOT DATES: A RUN ID, A YEAR ALONE, A VOLUME, AN IMPOSSIBLE DATE
+    assert mask("run 20261112T084916Z_dbb7be, year 2026, volume 12345678, 2025-13-45") == "run 20261112T084916Z_dbb7be, year 2026, volume 12345678, 2025-13-45"
+    # ACCOUNT IDS
+    assert mask("accounts DU0000000,U0000000") == "accounts DU*******,U*******" and records.redact_str("account U0000000") == "account ***"
+    # THE STREAMS OF A PROCESS THAT IMPORTED ingest ARE MASKED; A SCRIPT'S PLAN SHOWS 2005 BUT NOT A RECENT SESSION
+    assert isinstance(sys.stdout, config.MaskedStream) and isinstance(sys.stderr, config.MaskedStream)
+    root_str = tempfile.mkdtemp(prefix="so_mask_root_").replace("\\", "/") + "/"
+    os.makedirs(f"{root_str}store01_rawzone")
+    listed = run_script("download_ibkr_ohlcv.py", ["--list", "--dates", "2005-01-03", "2026-09-08"], root_str)
+    assert listed.returncode == 0 and "2005-01-03" in listed.stdout and "2026-09-08" not in listed.stdout and "####-##-##" in listed.stdout, listed.stdout + listed.stderr
+    passed("output mask: later dates (ISO, compact, month / year files) and account ids masked; run ids and years shown; scripts' plans masked")
+
+# TEST: LOCKS BY FOLDER, FINAL STATUSES, IBKR MESSAGES WITHOUT ACCOUNT IDS
+def test_lock_status_messages():
+    # THE LOCK FOLLOWS THE FOLDER (ORGANIZE / CLEAN / REBUILD ON AN INDEX FOLDER EXCLUDE THE INDEX WRITERS)
+    assert config.get_lock_name_str(index_config.get_index_folder_path_str("VIX", "1min")) == "vix_family"
+    assert config.get_lock_name_str(index_config.get_index_folder_path_str("VIX3M", "daily", True)) == "vix_family"
+    assert config.get_lock_name_str(config.RAW_OHLCV_PATH_STR) == "spy_1min" and config.get_lock_name_str(config.STAGING_OHLCV_PATH_STR) == "spy_1min"
+    # A BODY MAY END WITH "stopped" OR "finished_with_problems"; AN ERROR IS STILL "failed"
+    root_str = tempfile.mkdtemp(prefix="so_status_").replace("\\", "/") + "/"
+    for status_str in ["stopped", "finished_with_problems"]:
+        with records.ScriptRun("status_test", {}, "spy_1min", record_path_str_in=root_str) as run:
+            run.status_override_str = status_str
+        assert json.load(open(run.manifest_path_str))["status_str"] == status_str
+    try:
+        with records.ScriptRun("status_test", {}, "spy_1min", record_path_str_in=root_str) as run:
+            run.status_override_str = "stopped"
+            raise ValueError("boom")
+    except ValueError:
+        pass
+    assert json.load(open(run.manifest_path_str))["status_str"] == "failed"
+    # AN IBKR MESSAGE THAT QUOTES AN ACCOUNT ID IS STORED AND PRINTED MASKED
+    app = FakeIndexApp()
+    app.error(-1, 1700000000000, 2100, "API client has been unsubscribed from account data U0000000", "")
+    assert "0000000" not in json.dumps(app.message_dict_list) and "***" in app.message_dict_list[-1]["error_str"]
+    passed("locks follow the folder; final statuses stopped / finished_with_problems / failed; IBKR messages masked")
+
 # TEST: THE PRINT CUT-OFF FAILS CLOSED
 def test_print_cutoff():
     # A REAL DATE AT OR BEFORE THE DEFAULT IS USED AS IT IS (A TOML DATE WITHOUT QUOTES TOO)
@@ -523,5 +570,7 @@ if __name__ == "__main__":
     test_target_root_check()
     test_write_path_check()
     test_print_cutoff()
+    test_output_mask()
+    test_lock_status_messages()
     test_records()
     print("\nAll index pipeline tests passed ✅")

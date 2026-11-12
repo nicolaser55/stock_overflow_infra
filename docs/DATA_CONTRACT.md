@@ -1,7 +1,7 @@
 # Data contract: what this repository writes for `stock_overflow_workspace`
 
-**Contract version 2 (2026-11-08): version 1 plus the 3-month T-bill rate (DTB3) and SPY dividends. No research loader reads
-version 2 yet (delivery D3).** The research workspace reads files only and never imports this repository. This document
+**Contract version 2 (2026-11-08): version 1 plus the 3-month T-bill rate (DTB3) and SPY dividends. The research reads version 2
+(`so/core/external_data.py` in `stock_overflow_workspace`, from D3; checked at workspace commit `c5012d6`).** The research workspace reads files only and never imports this repository. This document
 is the whole interface between the two. A change to any folder name, file name, column or meaning below raises the version.
 That change lands in this file, in `tests/contract_reader.py`, and in the research side (`so/paths.py`, the loaders,
 `docs/DATA_SOURCES.md`) at the same time. The research files are protected, so Nicolas approves each change.
@@ -46,11 +46,11 @@ refresh never copies them into the development view.
 | Files | `ohlcv_data_YYYY.csv` (a past year), `ohlcv_data_YYYYMM.csv` (a past month of the current year), `ohlcv_data_YYYYMMDD.csv` (a day). The research reads every `*.csv` directly in the folder, whatever the layout, and no sub-folder. **Nothing else with a `.csv` name is ever written in a raw folder.** |
 | Columns | `timestamp, open, high, low, close, volume, created_ts, date` |
 | `timestamp` | New York time with its offset, as text, e.g. `2026-07-17 09:30:00-04:00`. 1-minute bars are stamped at the **start** of the minute. Daily index bars are stamped midnight New York: a date label, not a time. |
-| Prices | Text as IBKR sent it; never re-formatted. |
+| Prices | The value as decoded by ibapi (a binary double), written in Python's shortest round-trip form (`593.12`), and never re-formatted once written. The 2005 re-download with ibapi 10.50.2 (2026-11-12) gave the same text for every minute. |
 | `volume` | SPY: shares. Index: empty when IBKR sends its "unset" value (2**127 − 1). |
 | `created_ts` | Always empty (kept for compatibility with every existing file). |
 | `date` | `YYYY-MM-DD`, the New York session date. |
-| Sessions | SPY: NYSE regular hours, every minute from 09:30 to the last bar (15:59, or 12:59 on half days). A session with missing minutes is added only with `--include-partial`, and its gaps are in the download log. A staged file with a bar outside its session (another date, pre or post market) or a minute twice is never added. |
+| Sessions | Downloaded only once settled: from 06:00 New York on the calendar day after the session. SPY: NYSE regular hours, every minute from 09:30 to the last bar (15:59, or 12:59 on half days). A session with missing minutes is added only with `--include-partial`, and its gaps are in the download log. A staged file with a bar outside its session (another date, pre or post market) or a minute twice is never added. |
 | Revisions | **First stored print, add-only.** A date already in raw is never replaced. Daily index files merge with **existing rows winning**: a later IBKR correction is counted as a conflict in the merge log, never written. |
 | Bad ticks | Not judged here. The research's `scripts/fix_raw_bad_ticks.py` is the only rule; run it after a merge. Before a merge, this repository checks candlestick consistency only: high and low against the open and close, prices above zero, volume not negative, no missing value, no minute twice. |
 

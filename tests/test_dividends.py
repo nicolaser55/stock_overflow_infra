@@ -165,6 +165,28 @@ def test_checks():
     assert shown_dict["blocking_x"] == {"count_int": 2, "dates_before_2025-01-01": ["2004-06-01"]}
     passed("checks: disagreement and missing ex-date stop, resolutions settle them, year count, session, pay date, 3% of close; recent dates never shown")
 
+# TEST: A MISSING PREVIOUS CLOSE STOPS THE RUN UNLESS RAW SIMPLY ENDS BEFORE IT
+def test_missing_close():
+    ssga_pdf = dividends.read_ssga_pdf(SSGA_PATH_STR)
+    crosscheck_pdf = dividends.read_crosscheck_pdf(get_yahoo_bytes(SPY_ROW_LIST))
+    empty_resolution_pdf = pd.DataFrame(columns=dividends.RESOLUTION_COLUMN_STR_LIST)
+    empty_published_pdf = pd.DataFrame(columns=dividends.DIVIDEND_COLUMN_STR_LIST)
+    previous_list = ["2005-03-17", "2005-06-16", "2005-09-15", "2005-12-15", "2006-03-16", "2006-06-15", "2006-09-14", "2006-12-14"]
+    def get_issue_dict(close_dict_in):
+        return dividends.get_dividend_tuple(ssga_pdf, crosscheck_pdf, empty_resolution_pdf, empty_published_pdf, "RUNX", TODAY_STR, NOW_TS, close_dict_in)[1]
+    # EVERY CLOSE PRESENT: NOTHING MISSING
+    issue_dict = get_issue_dict({date_str: 120.0 for date_str in previous_list})
+    assert issue_dict["reported_no_previous_close"] == [] and issue_dict["blocking_no_previous_close_inside_raw"] == []
+    # RAW ENDS BEFORE THE LATEST EX-DATE: REPORTED, NOT BLOCKING
+    issue_dict = get_issue_dict({date_str: 120.0 for date_str in previous_list[:-1]})
+    assert len(issue_dict["reported_no_previous_close"]) == 1 and issue_dict["blocking_no_previous_close_inside_raw"] == []
+    # A GAP INSIDE RAW: BLOCKING
+    issue_dict = get_issue_dict({date_str: 120.0 for date_str in previous_list if date_str != "2005-09-15"})
+    assert issue_dict["blocking_no_previous_close_inside_raw"] == ["2005-09-16"]
+    # NO CLOSE AT ALL (AN EMPTY OR WRONG RAW FOLDER): EVERY ROW BLOCKING
+    assert len(get_issue_dict({})["blocking_no_previous_close_inside_raw"]) == 8
+    passed("missing previous close: blocking inside raw (gap, empty folder), only reported after raw's last close")
+
 # TEST: PUBLISH, RERUN, REVISION
 def test_publish():
     file_path_str = f"{config.RAWZONE_PATH_STR}spy_dividends/spy_dividends.csv"
@@ -222,6 +244,7 @@ if __name__ == "__main__":
     test_yahoo_reader()
     test_dry_run()
     test_checks()
+    test_missing_close()
     test_publish()
     test_script()
     print("\nAll dividend tests passed ✅")

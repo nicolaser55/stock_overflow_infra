@@ -73,13 +73,21 @@ def main():
             summary_pdf = download_index_task_pdf(app, task_dict_list, max_in_flight_int_in=args.max_in_flight, run_id_str_in=run.run_id_str)
         finally:
             app.disconnect_app()
-        # RECORD THE COUNTS IN THE MANIFEST
+        # RECORD THE COUNTS IN THE MANIFEST; TASKS NOT SAVED (GAVE UP) OR NEVER FINISHED (CONNECTION LOST) ARE PROBLEMS
         run.summary_dict["status_count_dict"] = summary_pdf["status_str"].value_counts().to_dict() if not summary_pdf.empty else {}
+        problem_int = int((~summary_pdf["saved_bool"].astype(bool)).sum()) + (len(task_dict_list) - len(summary_pdf))
+        run.summary_dict["problem_count_int"] = problem_int
+        if problem_int:
+            run.status_override_str = "finished_with_problems"
     # DISPLAY THE PROBLEMS
     problem_pdf = summary_pdf[summary_pdf["status_str"] != "complete"]
     print(f"\nNot complete: {len(problem_pdf)}")
     print(problem_pdf.to_string(index=False)) if not problem_pdf.empty else None
     print("Next: python scripts/ingest/merge_index_staging_into_raw.py   (dry run), then add --apply")
+    # EXIT 2 WHEN A TASK WAS NOT SAVED
+    if problem_int:
+        print(f"⚠️ {problem_int} request(s) not saved: see the download log. Exit code 2.")
+        raise SystemExit(2)
 
 # IF THE FILE IS RUN DIRECTLY
 if __name__ == "__main__":

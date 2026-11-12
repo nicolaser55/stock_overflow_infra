@@ -40,6 +40,9 @@ def main():
                 print(f"❌ {series_str}: {error}")
                 raise SystemExit(1) from None
             run.summary_dict[series_str] = summary_dict
+            # A BLOCKING CHECK WROTE NOTHING: THE MANIFEST SAYS SO
+            if "stopped_str" in summary_dict:
+                run.status_override_str = "stopped"
         # DISPLAY THE SUMMARY (COUNTS ONLY)
         print(f"\n=== {series_str} ({'APPLY' if args.apply else 'DRY RUN, nothing written'}) ===")
         print(json.dumps(summary_dict, indent=2))

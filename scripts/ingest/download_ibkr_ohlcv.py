@@ -77,8 +77,16 @@ def main():
                                                max_in_flight_int_in=args.max_in_flight, run_id_str_in=run.run_id_str)
         finally:
             app.disconnect_app()
-        # RECORD THE COUNTS IN THE MANIFEST
+        # RECORD THE COUNTS IN THE MANIFEST; SESSIONS NOT SAVED (GAVE UP) OR NEVER FINISHED (CONNECTION LOST) ARE PROBLEMS
         run.summary_dict["status_count_dict"] = summary_pdf["status_str"].value_counts().to_dict() if not summary_pdf.empty else {}
+        problem_int = int((~summary_pdf["saved_bool"].astype(bool)).sum()) + (len(session_pdf) - len(summary_pdf))
+        run.summary_dict["problem_count_int"] = problem_int
+        if problem_int:
+            run.status_override_str = "finished_with_problems"
+    # EXIT 2 WHEN A SESSION WAS NOT SAVED (A STOP CHECK ON THE EXIT CODE THEN SEES IT)
+    if problem_int:
+        print(f"⚠️ {problem_int} session(s) not saved: see the download log. Exit code 2.")
+        raise SystemExit(2)
 
 # IF THE FILE IS RUN DIRECTLY
 if __name__ == "__main__":

@@ -167,6 +167,43 @@ def test_publish():
         pass
     passed("publish: dry run writes nothing, append-only, rerun byte-identical, new vintage added, conflict stops, backup made")
 
+# TEST: A PARTIAL OR CHANGED ANSWER STOPS THE RUN; A WRITE THAT DOES NOT READ BACK IS UNDONE
+def test_partial_and_readback():
+    file_path_str = f"{config.RAWZONE_PATH_STR}fred_dtb3/dtb3.csv"
+    # AN ANSWER WITHOUT ITS ROW COUNT, OR THAT ENDS BEFORE IT, IS REFUSED (ONE PAGE MUST NEVER PASS FOR THE WHOLE ANSWER)
+    def no_count_getter(endpoint_str_in, query_dict_in):
+        return json.dumps({"vintage_dates": ["2005-01-03"]}).encode("utf-8")
+    def short_getter(endpoint_str_in, query_dict_in):
+        return json.dumps({"count": 5, "vintage_dates": ["2005-01-03"] if query_dict_in["offset"] == 0 else []}).encode("utf-8")
+    for getter in [no_count_getter, short_getter]:
+        try:
+            fred.fetch_fred_page_list("DTB3", getter)
+            raise AssertionError("a partial answer was accepted")
+        except fred.FredError as error:
+            assert "partial" in str(error)
+    # PUBLISHED ROWS THE SOURCE NO LONGER SENDS STOP THE RUN; THE FILE IS UNTOUCHED
+    before_bytes = open(file_path_str, "rb").read()
+    published_list = PERIOD_TUPLE_LIST + [("2005-02-01", "9999-12-31", "2005-01-04", "2.28")]   # WHAT test_publish LEFT PUBLISHED
+    fewer_list = [period for period in published_list if period[2] != "2005-01-07"]
+    summary_dict = fred.run_fred_series_dict("DTB3", True, "RUN5", get_fake_getter(fewer_list), "2026-01-01")
+    assert summary_dict["published_unseen_count_int"] == 1 and "stopped_str" in summary_dict and open(file_path_str, "rb").read() == before_bytes
+    # A WRITE THAT DOES NOT READ BACK AS WRITTEN: THE PREVIOUS FILE IS PUT BACK AND THE RUN STOPS
+    published_pdf = fred.read_published_pdf(file_path_str)
+    original_read = fred.pd.read_csv
+    fred.pd.read_csv = lambda *args_in, **kwargs_in: original_read(*args_in, **kwargs_in).iloc[:-1]
+    try:
+        fred.write_union_verified(published_pdf, file_path_str, f"{TEST_ROOT_PATH_STR}readback_backup/", fred.FRED_COLUMN_STR_LIST, fred.FredError)
+        raise AssertionError("a file that did not read back was accepted")
+    except fred.FredError:
+        pass
+    finally:
+        fred.pd.read_csv = original_read
+    assert open(file_path_str, "rb").read() == before_bytes
+    # A GOOD WRITE READS BACK AND LEAVES THE SAME BYTES
+    fred.write_union_verified(published_pdf, file_path_str, f"{TEST_ROOT_PATH_STR}readback_backup2/", fred.FRED_COLUMN_STR_LIST, fred.FredError)
+    assert open(file_path_str, "rb").read() == before_bytes
+    passed("partial answers refused; published rows no longer sent stop the run; a write that does not read back is undone")
+
 # TEST: ERRORS NEVER CARRY THE KEY
 def test_key_never_shown():
     secret_str = "abcdefghij0123456789abcdefghij01"
@@ -249,6 +286,7 @@ if __name__ == "__main__":
     test_vintage_rows()
     test_checks()
     test_publish()
+    test_partial_and_readback()
     test_key_never_shown()
     test_script()
     test_run_start_failure()

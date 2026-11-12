@@ -1,14 +1,18 @@
 # Runbook
 
 Commands run from the repository root with the venv's Python (`venv-infra\Scripts\python.exe`, written `python` below), on the
-desktop or the laptop. `config/local.toml` gives the target root: the quarantine on the desktop, the share that points to it on
-the laptop.
+desktop (the laptop ingest was retired on 2026-11-12). `config/local.toml` gives the target root: the quarantine.
+
+Exit codes: 0 done; 1 stopped (nothing written, or the step was undone); 2 finished with problems (some sessions or files were not
+saved, or a daily merge was rolled back: see the log; the manifest says `finished_with_problems`). Printed output shows a date only
+when it is before `print_dates_before` (`####-##-##` otherwise).
 
 ## New SPY sessions
 
 1. Start IB Gateway and sign in. API settings: socket port 4001, **Read-Only API** on.
 2. Plan, without a connection: `python scripts\ingest\download_ibkr_ohlcv.py --list`
-   - By default the plan is every closed session after the last date present in raw and staging.
+   - By default the plan is every settled session after the last date present in raw and staging. A session is settled from
+     06:00 New York on the calendar day after it: download the morning after (raw keeps the first stored print forever).
    - `--start` / `--end` / `--dates` choose other sessions.
 3. Download into staging: `python scripts\ingest\download_ibkr_ohlcv.py`
    - The run's manifest path is printed first.
@@ -60,13 +64,21 @@ changed since the raw file was downloaded, or a bad-tick correction was applied 
 - **"print_dates_before in config/local.toml ...".** Write it as `YYYY-MM-DD`, at or before the start of the holdout window.
 - **"The log ... has other columns".** An old log file sits where the new code wants to write. The code never appends to it;
   leave it as it is.
-- Run manifests: `store01_rawzone\_ingest\runs\<run id>.json`, one per writing run. They record whether the run `finished` or
-  `failed`, the git commit, the versions, and the counts.
+- **"ibapi ... is older than 10.50.1".** The venv was built from an old TWS API. Install a newer one and rebuild the venv with
+  `py -3.12 setup_venv.py` (it takes the newest `C:\TWS API*\source\pythonclient`), then `tests\test_installed_ibapi.py`.
+- **`IBKR [2188] Up-to-the-second historical data requires additional subscription`** is informational (a code IBKR added in
+  October 2026). It concerns bars from the last seconds, not history; the request goes on and the code does not treat it as an error.
+- Run manifests: `store01_rawzone\_ingest\runs\<run id>.json`, one per writing run. They record whether the run `finished`,
+  `finished_with_problems`, `stopped` (a blocking check: nothing written) or `failed`, the git commit, the versions, and the counts.
 
 ## Tests
 
-`python tests\run_all_tests.py`. This takes about 30 seconds. The tests use a simulated IBKR server and temporary folders only;
-they never read `config/local.toml` or any real data.
+`python tests\run_all_tests.py`. This takes about a minute. The tests use a simulated IBKR server and temporary folders only;
+they never use the configured target root or any real data (they do read `print_dates_before` and the IBKR settings from
+`config/local.toml`).
+
+After any change to the TWS API or the venv: `python tests\test_installed_ibapi.py` (version, callback arguments, account list
+dropped, ibapi loggers at WARNING). It is not part of CI, which uses ibapi 9.81 as a stand-in.
 
 ## 3-month T-bill rate (FRED DTB3)
 

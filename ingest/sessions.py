@@ -85,23 +85,36 @@ def get_session_pdf(date1_in, date2_in):
     # RETURN THE DATAFRAME
     return session_pdf.reset_index(drop=True)
 
-# FUNCTION: KEEP THE SESSIONS THAT HAVE CLOSED
-def get_closed_session_pdf(session_pdf_in, now_ny_ts_in, buffer_minutes_in=config.SESSION_CLOSE_BUFFER_MINUTES):
+# FUNCTION: GET THE TIME FROM WHICH EACH SESSION MAY BE DOWNLOADED
+def get_downloadable_ts_series(date_series_in):
     """
-    Keeps the sessions whose close (last bar + 1 minute) plus a buffer is at or before now.
+    Args:
+        date_series_in (pd.Series): Session dates (datetime.date)
+
+    Returns:
+        pd.Series: config.SESSION_DOWNLOADABLE_TIME_STR New York time on the calendar day after each date
+    """
+    # THE NEXT CALENDAR DAY AT THE CONFIGURED TIME, NEW YORK (DAYLIGHT SAVING HANDLED BY THE TIMEZONE)
+    return (pd.to_datetime(date_series_in.astype(str)) + pd.Timedelta(days=1) + pd.Timedelta(config.SESSION_DOWNLOADABLE_TIME_STR)).dt.tz_localize(config.NY_TZ_STR)
+
+# FUNCTION: KEEP THE SESSIONS THAT MAY BE DOWNLOADED (AND MERGED)
+def get_closed_session_pdf(session_pdf_in, now_ny_ts_in):
+    """
+    Keeps the sessions that are settled: now is at or after config.SESSION_DOWNLOADABLE_TIME_STR New York on the calendar day after
+    the session (decided 2026-11-12: raw keeps the first stored print forever, so a session is never taken minutes after its close).
 
     Args:
         session_pdf_in (pd.DataFrame): Sessions from get_session_pdf
         now_ny_ts_in (pd.Timestamp): Current New York time
-        buffer_minutes_in (int): Minutes after the close before a session counts as closed
 
     Returns:
-        pd.DataFrame: Closed sessions
+        pd.DataFrame: Settled sessions
     """
-    # DEFINE THE CLOSED MASK
-    closed_mask = session_pdf_in["last_bar_ts"] + pd.Timedelta(minutes=1 + buffer_minutes_in) <= now_ny_ts_in
-    # RETURN THE CLOSED SESSIONS
-    return session_pdf_in[closed_mask].reset_index(drop=True)
+    # IF THERE IS NO SESSION
+    if session_pdf_in.empty:
+        return session_pdf_in.reset_index(drop=True)
+    # RETURN THE SETTLED SESSIONS
+    return session_pdf_in[(get_downloadable_ts_series(session_pdf_in["date"]) <= now_ny_ts_in).values].reset_index(drop=True)
 
 # FUNCTION: GET THE LAST CLOSED SESSION DATE
 def get_last_closed_session_date(now_ny_ts_in):

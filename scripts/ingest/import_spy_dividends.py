@@ -38,6 +38,9 @@ def main():
             print(f"❌ SPY dividends: {error}")
             raise SystemExit(1) from None
         run.summary_dict["spy_dividends"] = summary_dict
+        # A BLOCKING CHECK WROTE NOTHING: THE MANIFEST SAYS SO
+        if "stopped_str" in summary_dict:
+            run.status_override_str = "stopped"
     # DISPLAY THE SUMMARY (COUNTS ONLY)
     print(f"\n=== SPY dividends ({'APPLY' if args.apply else 'DRY RUN, nothing written'}) ===")
     print(json.dumps(summary_dict, indent=2))

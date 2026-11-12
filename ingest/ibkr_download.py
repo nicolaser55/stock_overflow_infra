@@ -34,7 +34,7 @@ What changed compared with get_date_ohlcv_pdf + generate_func_data_date_range of
     6. Files go to the STAGING folder, written atomically. Every attempt is appended to the download log (staging folder),
        with the ibapi version, the run id (the run manifest in store01_rawzone/_ingest/runs/) and the SHA-256 of the saved
        file, so the provenance of each staged day is recorded.
-    7. Only sessions that have closed (in real New York time, plus a buffer) are requested.
+    7. Only settled sessions are requested: from 06:00 New York on the calendar day after the session (real New York time).
 
 File format (identical to the existing raw day files): timestamp (New York time with offset, e.g.
 "2026-07-17 09:30:00-04:00"), open, high, low, close, volume, created_ts (empty), date ("YYYY-MM-DD").

@@ -37,7 +37,7 @@ def main():
     source_path_str = config.check_write_path_str(args.source, args.skip_root_check)
     target_path_str = config.check_write_path_str(args.target, args.skip_root_check)
     # REBUILD THE FOLDER
-    with ScriptRun("rebuild_ohlcv_data", vars(args), "spy_1min", record_bool_in=args.apply, break_lock_bool_in=args.break_lock):
+    with ScriptRun("rebuild_ohlcv_data", vars(args), config.get_lock_name_str(target_path_str), record_bool_in=args.apply, break_lock_bool_in=args.break_lock):
         rebuild_raw_pdf(source_path_str, target_path_str, args.apply, args.delete_stale)
 
 # IF THE FILE IS RUN DIRECTLY

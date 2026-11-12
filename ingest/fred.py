@@ -124,11 +124,16 @@ def get_paged_body_list(getter_in, endpoint_str_in, query_dict_in, list_key_str_
         body_dict = json.loads(body_bytes.decode("utf-8"))
         if list_key_str_in not in body_dict:
             raise FredError(f"FRED {endpoint_str_in} answer at offset {offset_int} has no {list_key_str_in} ({body_dict.get('error_message', 'unknown format')}).")
+        # THE TOTAL IS NEEDED TO KNOW WHEN EVERY PAGE HAS BEEN READ: WITHOUT IT, ONE PAGE WOULD PASS FOR THE WHOLE ANSWER
+        if "count" not in body_dict:
+            raise FredError(f"FRED {endpoint_str_in} answer at offset {offset_int} has no row count; the answer may be partial.")
         body_list.append(body_bytes)
         offset_int += len(body_dict[list_key_str_in])
-        # STOP WHEN EVERY ROW HAS BEEN READ (OR A PAGE IS EMPTY)
-        if not body_dict[list_key_str_in] or offset_int >= int(body_dict.get("count", 0)):
+        # STOP WHEN EVERY ROW HAS BEEN READ; AN EMPTY PAGE BEFORE THE COUNT IS REACHED IS A PARTIAL ANSWER
+        if offset_int >= int(body_dict["count"]):
             break
+        if not body_dict[list_key_str_in]:
+            raise FredError(f"FRED {endpoint_str_in} answer stopped at {offset_int} of {body_dict['count']} rows; the answer is partial.")
     return body_list
 
 # FUNCTION: FETCH EVERY REAL-TIME PERIOD OF A SERIES, IN WINDOWS OF AT MOST VINTAGE_WINDOW_INT VINTAGE DATES
@@ -350,6 +355,45 @@ def get_append_tuple(published_pdf_in, row_pdf_in):
     # RETURN THE RESULT
     return add_pdf, conflict_list, unseen_int
 
+# FUNCTION: WRITE A PUBLISHED FILE ATOMICALLY AND CHECK IT BY READING IT BACK (SHARED WITH ingest.dividends)
+def write_union_verified(union_pdf_in, file_path_str_in, backup_path_str_in, column_str_list_in, error_class_in):
+    """
+    Backs up the published file (when it exists), writes the union through a temporary file and a rename, then reads the file back:
+    it must hold exactly the union's rows, as text, in the same order (so every published row is still there, unchanged). On any
+    difference the previous file is put back (or the new one removed) and error_class_in is raised.
+
+    Args:
+        union_pdf_in (pd.DataFrame): Published rows plus the new rows, sorted, every cell text
+        file_path_str_in (str): Published CSV
+        backup_path_str_in (str): Backup folder for the previous file (created when needed)
+        column_str_list_in (list[str]): Contract columns
+        error_class_in (type): Exception raised on a failed check (FredError, DividendError)
+    """
+    # BACK UP THE PREVIOUS FILE
+    os.makedirs(os.path.dirname(file_path_str_in), exist_ok=True)
+    existed_bool = os.path.exists(file_path_str_in)
+    if existed_bool:
+        os.makedirs(backup_path_str_in, exist_ok=True)
+        shutil.copy2(file_path_str_in, backup_path_str_in)
+    # WRITE THROUGH A TEMPORARY FILE
+    expected_pdf = union_pdf_in[column_str_list_in].fillna("").astype(str).reset_index(drop=True)
+    temporary_path_str = f"{file_path_str_in}.tmp"
+    expected_pdf.to_csv(temporary_path_str, index=False, lineterminator="\n")
+    os.replace(temporary_path_str, file_path_str_in)
+    # READ IT BACK: SAME COLUMNS, SAME ROWS, SAME TEXT, SAME ORDER
+    try:
+        written_pdf = pd.read_csv(file_path_str_in, dtype=str, keep_default_na=False)
+        same_bool = list(written_pdf.columns) == list(column_str_list_in) and written_pdf.equals(expected_pdf)
+    except (OSError, ValueError, pd.errors.ParserError):
+        same_bool = False
+    # ON A DIFFERENCE, PUT THE PREVIOUS FILE BACK (OR REMOVE THE NEW ONE) AND STOP
+    if not same_bool:
+        if existed_bool:
+            shutil.copy2(f"{backup_path_str_in}{os.path.basename(file_path_str_in)}", file_path_str_in)
+        else:
+            os.remove(file_path_str_in)
+        raise error_class_in(f"{os.path.basename(file_path_str_in)}: the written file did not read back as written; the previous file was put back.")
+
 # FUNCTION: SAVE THE DOWNLOADED PAGES
 def save_page_list(page_bytes_list_in, folder_path_str_in):
     """
@@ -401,9 +445,10 @@ def run_fred_series_dict(series_str_in, apply_bool_in, run_id_str_in, page_gette
     add_pdf, conflict_list, unseen_int = get_append_tuple(published_pdf, row_pdf)
     summary_dict.update({"published_row_count_int": int(len(published_pdf)), "row_to_add_count_int": int(len(add_pdf)),
                          "conflict_count_int": len(conflict_list), "published_unseen_count_int": unseen_int})
-    # STOP ON A BLOCKING CHECK OR A CONFLICT (NOTHING IS WRITTEN)
-    if blocking_list or conflict_list:
-        summary_dict["stopped_str"] = f"blocking checks: {blocking_list}; conflicts with published rows: {len(conflict_list)}"
+    # STOP ON A BLOCKING CHECK, A CONFLICT, OR PUBLISHED ROWS THE SOURCE NO LONGER SENDS (A PARTIAL OR CHANGED ANSWER; NOTHING IS WRITTEN)
+    if blocking_list or conflict_list or unseen_int:
+        summary_dict["stopped_str"] = (f"blocking checks: {blocking_list}; conflicts with published rows: {len(conflict_list)}; "
+                                       f"published rows the source no longer sends: {unseen_int}")
         return summary_dict
     # DRY RUN: STOP HERE
     if not apply_bool_in:
@@ -414,16 +459,10 @@ def run_fred_series_dict(series_str_in, apply_bool_in, run_id_str_in, page_gette
     # NOTHING NEW: LEAVE THE PUBLISHED FILE AS IT IS
     if add_pdf.empty:
         return summary_dict
-    # BACK UP THE PUBLISHED FILE, THEN WRITE THE UNION ATOMICALLY (PUBLISHED ROWS UNCHANGED)
-    os.makedirs(folder_path_str, exist_ok=True)
-    if os.path.exists(file_path_str):
-        backup_path_str = f"{config.RAWZONE_PATH_STR}{spec_dict['folder_str']}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}/"
-        os.makedirs(backup_path_str, exist_ok=True)
-        shutil.copy2(file_path_str, backup_path_str)
+    # BACK UP THE PUBLISHED FILE, THEN WRITE THE UNION ATOMICALLY (PUBLISHED ROWS UNCHANGED) AND READ IT BACK
     union_pdf = pd.concat([published_pdf, add_pdf], ignore_index=True).sort_values(FRED_KEY_STR_LIST)[FRED_COLUMN_STR_LIST]
-    temporary_path_str = f"{file_path_str}.tmp"
-    union_pdf.to_csv(temporary_path_str, index=False, lineterminator="\n")
-    os.replace(temporary_path_str, file_path_str)
+    write_union_verified(union_pdf, file_path_str, f"{config.RAWZONE_PATH_STR}{spec_dict['folder_str']}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}/",
+                         FRED_COLUMN_STR_LIST, FredError)
     summary_dict["published_sha256_str"] = get_file_sha256_str(file_path_str)
     # RETURN THE SUMMARY
     return summary_dict

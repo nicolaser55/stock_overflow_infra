@@ -8,7 +8,7 @@ real data folder: SO_INGEST_TARGET_ROOT points to a temporary folder before inge
 What is verified:
     1. IBKR client: error callbacks of every ibapi layout (9.81, 10.19, 10.45), bar timestamps and Decimal volumes,
        the end datetime string, late bars of a timed-out request ignored, informational messages not ending a request.
-    2. Sessions: full and half days, the closed-session filter, the real New York clock.
+    2. Sessions: full and half days, the settled-session filter (06:00 New York the next day), the real New York clock.
     3. Download: complete / partial / extra / duplicate / empty / no data / pacing / error / timeout behaviours, retries,
        what is saved and what is not, the file format, the download log, the in-flight limit and the submission interval,
        the pacing pause, skipping of sessions already present.
@@ -139,6 +139,25 @@ def test_request_lifecycle():
     assert not app.isConnected()
     passed("timed-out request cancelled and its late bars ignored; info messages ignored; no cancel after the end")
 
+# FUNCTION: TEST THE ibapi VERSION GATE (THE REAL CLIENT REFUSES TO CONNECT BELOW config.MIN_IBAPI_VERSION_STR)
+def test_version_gate():
+    from ingest import ibkr_client
+    assert ibkr_client.get_version_tuple("10.50.2") >= ibkr_client.get_version_tuple(config.MIN_IBAPI_VERSION_STR)
+    assert ibkr_client.get_version_tuple("10.45.1") < ibkr_client.get_version_tuple("10.50.1") < ibkr_client.get_version_tuple("10.50.2")
+    assert ibkr_client.get_version_tuple("unknown") == (0,) and ibkr_client.get_version_tuple("9.81.1.post1") == (9, 81, 1)
+    # AN OLD (OR UNREADABLE) VERSION: connect_app RETURNS FALSE BEFORE OPENING ANY SOCKET
+    original_version = ibkr_client.get_ibapi_version_str
+    for version_str in ["10.45.1", "unknown"]:
+        ibkr_client.get_ibapi_version_str = lambda version_str=version_str: version_str
+        try:
+            app = ibkr_client.IbkrApp(alert_in=False)
+            assert app.connect_app(port_int_in=1, timeout_seconds_in=0.1) is False and not app.isConnected() and app.api_thread is None
+        finally:
+            ibkr_client.get_ibapi_version_str = original_version
+    # THE SIMULATED SERVERS OF THE TESTS RUN WITH ANY VERSION (CI USES 9.81.1.post1 AS A STAND-IN)
+    assert FakeIbkrApp.require_min_ibapi_bool is False and ibkr_client.IbkrApp.require_min_ibapi_bool is True
+    passed("ibapi version gate: an old or unreadable ibapi is refused before any connection")
+
 """
 2. Sessions
 """
@@ -149,14 +168,21 @@ def test_sessions():
     session_pdf = get_session_pdf("2025-11-26", "2025-12-01")
     assert session_pdf["date"].astype(str).tolist() == ["2025-11-26", "2025-11-28", "2025-12-01"]
     assert session_pdf["bar_count_int"].tolist() == [390, 210, 390]
-    # CLOSED FILTER: AT 16:04 THE SESSION OF THE DAY IS NOT CLOSED YET (5-MINUTE BUFFER), AT 16:05 IT IS
+    # SETTLED FILTER: A SESSION IS DOWNLOADABLE FROM 06:00 NEW YORK ON THE NEXT CALENDAR DAY (NOT MINUTES AFTER ITS CLOSE)
     one_day_pdf = get_session_pdf("2025-12-01", "2025-12-01")
-    assert get_closed_session_pdf(one_day_pdf, pd.Timestamp("2025-12-01 16:04", tz=config.NY_TZ_STR)).empty
-    assert len(get_closed_session_pdf(one_day_pdf, pd.Timestamp("2025-12-01 16:05", tz=config.NY_TZ_STR))) == 1
+    assert get_closed_session_pdf(one_day_pdf, pd.Timestamp("2025-12-01 16:05", tz=config.NY_TZ_STR)).empty
+    assert get_closed_session_pdf(one_day_pdf, pd.Timestamp("2025-12-02 05:59", tz=config.NY_TZ_STR)).empty
+    assert len(get_closed_session_pdf(one_day_pdf, pd.Timestamp("2025-12-02 06:00", tz=config.NY_TZ_STR))) == 1
+    # A FRIDAY SESSION IS DOWNLOADABLE ON SATURDAY MORNING; ACROSS THE DAYLIGHT-SAVING CHANGE THE TIME IS STILL 06:00 NEW YORK
+    friday_pdf = get_session_pdf("2026-10-30", "2026-10-30")
+    assert get_closed_session_pdf(friday_pdf, pd.Timestamp("2026-10-31 05:59", tz=config.NY_TZ_STR)).empty
+    assert len(get_closed_session_pdf(friday_pdf, pd.Timestamp("2026-10-31 06:00", tz=config.NY_TZ_STR))) == 1
+    assert len(get_closed_session_pdf(get_session_pdf("2026-03-06", "2026-03-06"), pd.Timestamp("2026-03-07 11:00", tz="UTC"))) == 1
+    assert get_closed_session_pdf(get_session_pdf("2026-03-06", "2026-03-06"), pd.Timestamp("2026-03-07 10:59", tz="UTC")).empty
     # THE CLOCK IS REAL NEW YORK TIME (NOT THE LOCAL CLOCK LABELLED AS NEW YORK)
     now_ts = get_ny_now_ts()
     assert str(now_ts.tz) == config.NY_TZ_STR and abs((now_ts - pd.Timestamp.now(tz="UTC")).total_seconds()) < 5
-    passed("sessions (full / half days), closed-session filter with buffer, real New York clock")
+    passed("sessions (full / half days), settled-session filter (06:00 New York the next day), real New York clock")
 
 """
 3. Download
@@ -511,6 +537,7 @@ if __name__ == "__main__":
         test_error_layouts()
         test_bar_parsing()
         test_request_lifecycle()
+        test_version_gate()
         test_sessions()
         test_download_behaviours()
         test_download_pacing()

@@ -35,12 +35,22 @@ def main():
     # STOP UNLESS THE TARGET ROOT IS SET, EXISTS AND IS THE QUARANTINE (NOT A DEVELOPMENT VIEW); --skip-root-check IS FOR TESTS
     config.check_target_root_str(args.skip_root_check)
     # MERGE EVERY INDEX AND BAR KIND
+    failed_int = 0
     with ScriptRun("merge_index_staging_into_raw", vars(args), "vix_family", record_bool_in=args.apply, break_lock_bool_in=args.break_lock) as run:
         for symbol_str in args.symbols:
             for bar_kind_str in args.bars:
                 result_pdf = merge_index_staging_into_raw_pdf(symbol_str, bar_kind_str, args.apply, args.include_partial, run_id_str_in=run.run_id_str)
                 run.summary_dict[f"{symbol_str}_{bar_kind_str}"] = result_pdf["decision_str"].str.split(":").str[0].value_counts().to_dict() if not result_pdf.empty else {}
                 print(result_pdf.to_string(index=False)) if not result_pdf.empty else None
+                # A DAILY MERGE THAT FAILED OR ROLLED BACK (FOLDER RESTORED) IS A PROBLEM, NOT A NORMAL SKIP
+                failed_int += int(result_pdf["decision_str"].str.match(r"skip: (failed|rolled_back)").sum()) if not result_pdf.empty else 0
+        run.summary_dict["problem_count_int"] = failed_int
+        if failed_int:
+            run.status_override_str = "finished_with_problems"
+    # EXIT 2 WHEN A MERGE FAILED
+    if failed_int:
+        print(f"⚠️ {failed_int} daily merge(s) failed and were rolled back (raw unchanged for them). Exit code 2.")
+        raise SystemExit(2)
 
 # IF THE FILE IS RUN DIRECTLY
 if __name__ == "__main__":

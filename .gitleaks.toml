@@ -1,4 +1,6 @@
-# gitleaks settings: the default rules, plus IBKR account ids. The test files hold fake values on purpose (all zeros).
+# gitleaks settings: the default rules, plus IBKR account ids.
+# The repository guard's own file holds the patterns and their samples, so it is skipped as a whole. Elsewhere only the exact fake
+# values the tests use are allowed (never a whole file): a real value pasted into a test file is found like anywhere else.
 [extend]
 useDefault = true
 
@@ -8,5 +10,6 @@ description = "IBKR account id"
 regex = '''\b(?:DU|DF|U|F)[1-9]\d{6,7}\b'''
 
 [allowlist]
-description = "fake values used by the tests"
-paths = ['''tests/test_repo_guard\.py''', '''tests/test_index_pipeline\.py''']
+description = "the guard's pattern samples, and the fake values used by the tests"
+paths = ['''tests/test_repo_guard\.py''']
+regexes = ['''0123abcd''', '''hunter2''', '''\b(?:DU|DF|U|F)0000000\b''']

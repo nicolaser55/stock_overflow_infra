@@ -10,7 +10,7 @@ from ingest import index_config
 # IMPORT THE IBKR CLIENT FUNCTIONS
 from ingest.ibkr_client import IbkrApp, get_contract, get_ibapi_version_str, get_volume_number
 # IMPORT THE SESSION FUNCTIONS
-from ingest.sessions import get_ny_now_ts, get_session_pdf
+from ingest.sessions import get_ny_now_ts, get_session_pdf, get_closed_session_pdf
 # IMPORT THE RAW FILE FUNCTIONS
 from ingest.records import get_file_sha256_str
 from ingest.raw_files import (TS_KEY_COL_STR, get_file_name_str, get_present_date_set, get_ts_utc_series, read_ohlcv_text_pdf, write_text_pdf_atomic,
@@ -26,7 +26,7 @@ How this differs from the SPY downloader (ingest.ibkr_download), and why:
        (end = last wanted date + a few days, duration "2 Y"; the bars outside the wanted dates are dropped).
     2. No fixed number of bars. The session window of the indices changed over the years, so a 1-minute session is checked only for missing
        minutes inside the core hours (09:31 - 15:59); the first bar, the last bar and the bars of another date are logged, not judged.
-    3. A session is "downloadable" once the indices have stopped calculating: every session before today, and today only from 17:00 New York.
+    3. A session is "downloadable" from 06:00 New York on the calendar day after it (ingest.sessions.get_closed_session_pdf, the SPY rule).
     4. Everything else is the SPY downloader's behaviour: a session is saved only when IBKR said the request is finished; a partial session is requested
        again (up to REQUEST_ATTEMPT_COUNT attempts, 16 s apart) and, if still partial, saved and flagged; pacing violations pause the submissions with a growing
        back-off; files are written atomically into the staging folder; every attempt is appended to the download log with the ibapi and server versions.
@@ -300,12 +300,10 @@ def get_index_closed_session_pdf(session_pdf_in, now_ny_ts_in):
         now_ny_ts_in (pd.Timestamp): Current New York time
 
     Returns:
-        pd.DataFrame: Sessions before today, and today's session from INDEX_SESSION_DONE_TIME_STR on
+        pd.DataFrame: The sessions that may be downloaded: the same rule as SPY (06:00 New York on the next calendar day)
     """
-    # DEFINE THE TIME OF TODAY FROM WHICH THE SESSION IS DONE
-    done_ts = pd.Timestamp(f"{now_ny_ts_in.date()} {index_config.INDEX_SESSION_DONE_TIME_STR}", tz=config.NY_TZ_STR)
-    # RETURN THE FINISHED SESSIONS
-    return session_pdf_in[(session_pdf_in["date"] < now_ny_ts_in.date()) | ((session_pdf_in["date"] == now_ny_ts_in.date()) & (now_ny_ts_in >= done_ts))].reset_index(drop=True)
+    # RETURN THE SETTLED SESSIONS
+    return get_closed_session_pdf(session_pdf_in, now_ny_ts_in)
 
 # FUNCTION: GET THE REQUESTS (TASKS) TO DOWNLOAD
 def get_index_task_list(symbol_str_in, bar_kind_str_in, date1_in=None, date2_in=None, date_list_in=None, from_start_bool_in=False, redownload_bool_in=False,
