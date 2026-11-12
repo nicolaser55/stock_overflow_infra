@@ -71,6 +71,14 @@ changed since the raw file was downloaded, or a bad-tick correction was applied 
 - Run manifests: `store01_rawzone\_ingest\runs\<run id>.json`, one per writing run. They record whether the run `finished`,
   `finished_with_problems`, `stopped` (a blocking check: nothing written) or `failed`, the git commit, the versions, and the counts.
 
+## Backup (NAS)
+
+- Every night at 04:10 the task `SO Backup` (SYSTEM) backs up the configured folders; `last_status.json` in the log folder says
+  whether it worked (`ok`, `step`, `error`, counts). Task Scheduler's last run result: 0 done, 1 failed, 2 another backup running.
+- After any change to `backup\*.ps1`: run `backup\install_backup.ps1 ... -Apply` again (administrator), so the task runs the new copy.
+- Each quarter, and after any change: `& 'C:\ProgramData\so_backup\restore_test.ps1' -TestRoot '<quarantine>\_restore_test'`
+  (administrator; counts only). Never restore into the development view. Details: `backup/README.md`.
+
 ## Tests
 
 `python tests\run_all_tests.py`. This takes about a minute. The tests use a simulated IBKR server and temporary folders only;

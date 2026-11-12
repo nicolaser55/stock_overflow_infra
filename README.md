@@ -4,7 +4,8 @@ Machine-side code of the Stock Overflow project:
 - **`ingest/`** downloads market data from IBKR (SPY 1-minute bars; VIX and VIX3M daily and 1-minute bars), checks it and adds
   it to the project's complete data tree, the quarantine. It also brings in the 3-month T-bill rate (FRED DTB3) with every
   first release and revision, and SPY dividends (State Street, cross-checked against Yahoo Finance).
-- **`backup/`** (to come) will hold the NAS backup and archive jobs.
+- **`backup/`** backs up the quarantine and the research records to the NAS every night (restic over SFTP, encrypted, run as
+  SYSTEM from a volume snapshot), and tests restores. See [`backup/README.md`](backup/README.md).
 
 The research itself lives in [`stock_overflow_workspace`](https://github.com/nicolaser55/stock_overflow_workspace). That
 workspace reads the files this repository writes and never imports its code. The interface is
