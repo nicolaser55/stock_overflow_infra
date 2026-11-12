@@ -65,15 +65,32 @@ $Enc = New-Object Text.UTF8Encoding $false
 [IO.File]::WriteAllText((Join-Path $ConfigDir 'sources.txt'), (($SourcePath -join "`r`n") + "`r`n"), $Enc)
 New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir 'cache') | Out-Null
 # 3. ACCESS: THE FOLDER'S ONLY (SYSTEM, ADMINISTRATORS), OWNER SYSTEM; READ BACK
+# Compared by SID, not by name. /grant:r only replaces the grants of the SIDs it names, so any other explicit entry on the folder
+# (Explorer adds one for the signed-in user when an administrator clicks "Continue" to open the folder) is removed one by one.
+$Allowed = @('S-1-5-18', 'S-1-5-32-544')
+function Get-SoOwnerSid($Acl) {
+    try { return (New-Object Security.Principal.NTAccount $Acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value } catch { return "$($Acl.Owner)" }
+}
+function Get-SoAceSid($Ace) {
+    try { return $Ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { return "$($Ace.IdentityReference)" }
+}
 icacls $ConfigDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "STOP: could not set the folder ACL"; exit 1 }
+$Extra = @((Get-Acl -LiteralPath $ConfigDir).Access | ForEach-Object { Get-SoAceSid $_ } | Where-Object { $_ -notin $Allowed } | Sort-Object -Unique)
+foreach ($Sid in $Extra) {
+    if ($Sid -notmatch '^S-1-[0-9-]+$') { Write-Host "STOP: an entry on $ConfigDir has no SID ($Sid); remove it by hand"; exit 1 }
+    icacls $ConfigDir /remove "*$Sid" | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "STOP: could not remove an entry from $ConfigDir"; exit 1 }
+}
+Write-Host "Removed $($Extra.Count) extra entr$(if ($Extra.Count -eq 1) { 'y' } else { 'ies' }) from the folder ACL"
 Get-ChildItem -LiteralPath $ConfigDir -Recurse -Force | ForEach-Object { icacls $_.FullName /reset | Out-Null }
 icacls $ConfigDir /setowner '*S-1-5-18' /T | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "STOP: could not set the owner"; exit 1 }
-$Allowed = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
 foreach ($Item in @(Get-Item -LiteralPath $ConfigDir) + @(Get-ChildItem -LiteralPath $ConfigDir -Recurse -Force)) {
-    $Others = @((Get-Acl -LiteralPath $Item.FullName).Access | Where-Object { $_.IdentityReference.Value -notin $Allowed })
+    $Acl = Get-Acl -LiteralPath $Item.FullName
+    $Others = @($Acl.Access | Where-Object { (Get-SoAceSid $_) -notin $Allowed })
     if ($Others.Count -gt 0) { Write-Host "STOP: $($Item.FullName) is readable by $($Others[0].IdentityReference)"; exit 1 }
+    if ((Get-SoOwnerSid $Acl) -ne 'S-1-5-18') { Write-Host "STOP: $($Item.FullName) is owned by $($Acl.Owner)"; exit 1 }
 }
 Write-Host "OK $ConfigDir and every file in it: SYSTEM and Administrators only, owner SYSTEM"
 # 4. THE TASK

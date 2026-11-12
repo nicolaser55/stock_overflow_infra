@@ -15,6 +15,8 @@ clone's `.git`. The exact folders are machine settings (`sources.txt`), not in t
 **Why the task runs a copy.** The task runs `C:\ProgramData\so_backup\run_backup.ps1`, readable and writable only by SYSTEM and
 Administrators, never the script in a clone: no account that can edit a clone can have code run as SYSTEM. After every change to
 these scripts, run `install_backup.ps1 ... -Apply` again.
+Do not open the folder in Explorer: clicking "Continue" there adds a permanent entry for your own account. Use an administrator
+PowerShell. If it happens, `install_backup.ps1 ... -Apply` removes the entry.
 
 **Holdout.** The repository is encrypted (restic). The NAS account has key-only SSH, no SMB or NFS share exists on its dataset, and no
 agent or runner account holds the key or the password. Restores go only into `<quarantine>\_restore_test` (the script refuses any
